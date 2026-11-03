@@ -96,12 +96,21 @@ class BookAndTablebaseManager:
 
         # 3. Inicializa Tablebases Syzygy se a pasta syzygy/ existir localmente
         self.tablebase = None
-        syzygy_dir = os.path.join(base_dir, "syzygy")
-        if os.path.isdir(syzygy_dir):
-            try:
-                self.tablebase = chess.syzygy.open_tablebase(syzygy_dir)
-            except Exception:
-                self.tablebase = None
+        self.load_syzygy(os.path.join(base_dir, "syzygy"))
+
+    def load_syzygy(self, syzygy_dir: str) -> bool:
+        """Abre as tablebases Syzygy de uma pasta (arquivos .rtbw/.rtbz). Retorna True se houver tabelas."""
+        if not os.path.isdir(syzygy_dir):
+            return False
+        try:
+            has_files = any(f.lower().endswith((".rtbw", ".rtbz")) for f in os.listdir(syzygy_dir))
+            if not has_files:
+                return False
+            self.tablebase = chess.syzygy.open_tablebase(syzygy_dir)
+            return True
+        except Exception:
+            self.tablebase = None
+            return False
 
     @staticmethod
     def _pos_key(board: chess.Board) -> str:
@@ -168,53 +177,64 @@ class BookAndTablebaseManager:
 
         return None
 
+    def max_pieces(self) -> int:
+        """Número máximo de peças para consultar as tablebases (0 se não houver arquivos)."""
+        return MAX_SYZYGY_PIECES if self.tablebase is not None else 0
+
+    def probe_wdl(self, board: chess.Board) -> int | None:
+        """
+        Consulta WDL (Win/Draw/Loss) para uso DENTRO da busca.
+        Retorna 2 (vitória), 1 (vitória anulada pela regra dos 50), 0 (empate),
+        -1, -2 (derrota) do ponto de vista de quem joga, ou None se indisponível.
+        """
+        if self.tablebase is None or board.castling_rights:
+            return None
+        if board.occupied.bit_count() > MAX_SYZYGY_PIECES:
+            return None
+        try:
+            return self.tablebase.probe_wdl(board)
+        except Exception:
+            return None
+
     def get_syzygy_move(self, board: chess.Board) -> tuple[chess.Move | None, int | None]:
         """
-        Consulta as Tablebases Syzygy locais se houver no máximo 5 peças no tabuleiro
-        (regra estrita do FAQ Item 4).
+        Consulta as Tablebases Syzygy na raiz se houver no máximo 5 peças (FAQ Item 4).
+        Escolhe o lance que mantém o melhor resultado (WDL) e, entre os vencedores, o que
+        converte mais rápido (menor DTZ); perdendo, o que mais resiste.
         Retorna (melhor_lance, avaliacao_em_centipawns).
         """
-        if self.tablebase is None:
+        if self.tablebase is None or board.castling_rights:
             return None, None
-
-        # Regra estrita do FAQ Item 4: apenas até 5 peças!
         if board.occupied.bit_count() > MAX_SYZYGY_PIECES:
             return None, None
 
+        best_move = None
+        best_rank = None
+        best_wdl = 0
         try:
-            best_move = None
-            best_wdl = -3
-            best_dtz = 0
-
             for move in board.legal_moves:
                 board.push(move)
                 try:
-                    # WDL do oponente após o nosso lance (invertemos o sinal)
-                    wdl = -self.tablebase.probe_wdl(board)
-                    dtz = -self.tablebase.probe_dtz(board)
-                except Exception:
+                    if board.is_checkmate():
+                        return move, 29999  # mate imediato
+                    wdl = -self.tablebase.probe_wdl(board)   # resultado do NOSSO ponto de vista
+                    dtz = -self.tablebase.probe_dtz(board)   # >0: ganhamos; <0: perdemos
+                finally:
                     board.pop()
-                    return None, None
-                board.pop()
-
-                if best_move is None or wdl > best_wdl:
-                    best_wdl = wdl
-                    best_dtz = dtz
+                rank = (wdl, -dtz)  # vitória rápida / derrota o mais lenta possível
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
                     best_move = move
-                elif wdl == best_wdl:
-                    # Se estamos ganhando (wdl > 0), queremos o menor DTZ positivo para ganhar rápido
-                    if wdl > 0 and 0 < dtz < best_dtz:
-                        best_dtz = dtz
-                        best_move = move
-                    # Se estamos perdendo (wdl < 0), queremos atrasar o máximo possível
-                    elif wdl < 0 and dtz < best_dtz:
-                        best_dtz = dtz
-                        best_move = move
-
-            if best_move is not None:
-                score_cp = 25000 if best_wdl > 0 else (-25000 if best_wdl < 0 else 0)
-                return best_move, score_cp
+                    best_wdl = wdl
         except Exception:
-            pass
+            return None, None
 
-        return None, None
+        if best_move is None:
+            return None, None
+        if best_wdl >= 2:
+            score_cp = 20000
+        elif best_wdl <= -2:
+            score_cp = -20000
+        else:
+            score_cp = 0
+        return best_move, score_cp

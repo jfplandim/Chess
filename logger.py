@@ -60,6 +60,9 @@ class MatchLogger:
             moves_to_mate = max(1, (plies_to_mate + 1) // 2)
             sign = "+" if score_cp > 0 else "-"
             return f"{sign}MATE em {moves_to_mate} ({score_cp:+d})"
+        if abs(score_cp) >= 19000:
+            # Faixa reservada às Tablebases Syzygy (vitória/derrota teórica sem mate à vista)
+            return f"{'+VITÓRIA' if score_cp > 0 else '-DERROTA'} TB ({score_cp:+d})"
         pawns = score_cp / 100.0
         return f"{score_cp:+d} cp ({pawns:+.2f})"
 

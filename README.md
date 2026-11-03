@@ -1,55 +1,265 @@
 # Motor de Xadrez — Chess Challenge III (ICEV 2026)
 
-Motor de xadrez desenvolvido integralmente em Python para o **III Chess Challenge — ICEV 2026**, utilizando a biblioteca `python-chess` exclusivamente para a camada de representação de tabuleiro e geração de lances legais (conforme permitido pelo **Item 14 do FAQ Oficial**) e implementando com **100% de autoria própria** todos os três componentes decisórios exigidos pelo **Item 2 do FAQ**:
+Motor de xadrez em Python para o **III Chess Challenge — ICEV 2026**. A biblioteca
+`python-chess` é usada **somente** para representar o tabuleiro e gerar lances legais
+(permitido pelo **Item 14 do FAQ**). Os três componentes decisórios exigidos pelo
+**Item 2 do FAQ** são de autoria própria:
 
-1. **Função de Avaliação Heurística (`evaluation.py`)**
-2. **Método de Busca e Seleção de Lances (`search.py`)**
-3. **Gestão Dinâmica de Tempo (`time_manager.py`)**
+1. **Função de Avaliação** (`evaluation.py`)
+2. **Busca e Seleção de Lances** (`search.py`)
+3. **Gestão Dinâmica de Tempo** (`time_manager.py`)
 
 ---
 
-## Como Instalar e Executar
+## Declaração para o credenciamento (FAQ Item 1)
 
-### 1. Instalar a única dependência (antes do torneio, com internet ligada)
+| Item | Declaração |
+| :--- | :--- |
+| Projeto-base | [`jfplandim/Chess`](https://github.com/jfplandim/Chess), commit `ccee6c7` |
+| Autoria própria (Item 2) | Avaliação (`evaluation.py`), busca (`search.py`) e gestão de tempo (`time_manager.py`) |
+| Biblioteca (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; declarada em `requirements.txt` |
+| Livro (Item 3) | Linhas clássicas de abertura embutidas em `book_and_tb.py`, até 10 meios-lances |
+| Tablebases (Item 4) | Syzygy de até 5 peças, baixadas antes do evento com `tools/baixar_syzygy.py` |
+| Tabelas da avaliação | Valores públicos do PeSTO como ponto de partida (seção 10 do guia da banca) |
+| Hardware (Itens 5 a 8) | Notebook da equipe, só CPU, sem GPU |
+| Modelos (Item 15) | Nenhum peso de modelo |
+| Rede (Item 14) | Nenhuma requisição externa durante as partidas |
+
+Livro, tablebases e tabelas PeSTO são de terceiros e não contam como autoria da equipe.
+
+---
+
+## Resultado da versão 2 (medido)
+
+| Métrica | Versão anterior | Versão atual |
+| :--- | :---: | :---: |
+| Match direto (40 partidas, 20s+0,2s, mesma gestão de tempo nos dois) | — | **+38 =2 −0** |
+| Profundidade em 5 s (posições de meio-jogo) | 5 – 8 | **12 – 17** |
+| Velocidade (nós/s, mesmo notebook) | ~15 mil | ~19 mil |
+| Avaliação estática | ~16–20 µs | ~10–12 µs (com muito mais conhecimento) |
+| Perde por tempo em ritmo rápido | sim (mínimo de 1 s/lance) | não |
+| Ritmo do torneio simulado (3+2 com 0,8 s de operador ≈ 15+10 com 4 s) | — | nunca estourou o relógio |
+
+Cada mudança só entrou depois de vencer um match contra a versão anterior. Exemplos:
+
+| Experimento | Resultado | Decisão |
+| :--- | :--- | :--- |
+| Termos de ameaça (peça atacada por peão / pendurada) | +42 =31 −27 (**+52 Elo**, LOS 96,5%) | aceito |
+| Pesos ajustados por Texel Tuning com partidas da CCRL | +6 =4 −17 (**−150 Elo**) | **rejeitado** |
+| Sacrifício com xeque sem redução (LMR) | WAC 197 → 200 de 300; match +26 =17 −17 | aceito |
+
+Como reproduzir: `python tools/match.py --help` (veja a seção *Ferramentas*).
+
+---
+
+## Como instalar e executar
+
+### 1. Instalar a dependência (antes do torneio, com internet)
+Requer **Python 3.10 ou superior** (testado no 3.14; o CPython é mais rápido que o PyPy
+para este motor, pois os bitboards de 64 bits viram inteiros grandes no PyPy).
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Testar e Validar o Motor
+### 2. (Recomendado) Baixar as Tablebases Syzygy de até 5 peças (FAQ Item 4)
+```bash
+python tools/baixar_syzygy.py          # ~940 MB, cria a pasta syzygy/
+```
+Sem a pasta `syzygy/` o motor funciona normalmente (só não usa as tablebases).
+
+### 3. Validar o motor (rode antes de cada partida)
 ```bash
 python test_engine.py
 ```
 
-### 3. Iniciar a Interface Oficial de Partida (Dia do Torneio - 100% Offline)
+### 4. Partida oficial (100% offline)
 ```bash
 python main.py
 ```
 
 ---
 
-## Arquitetura do Projeto e Autoria Técnica (Guia para a Arguição da Banca)
+## Checklist do dia do torneio
 
-| Arquivo | Responsabilidade | Destaques Técnicos |
-| :--- | :--- | :--- |
-| `evaluation.py` | **Função de Avaliação (Heurística)** | *Tapered Evaluation* (PeSTO) interpolando Meio-Jogo (MG) e Final de Jogo (EG); Máscaras de Bitboard de 64 bits pré-calculadas para Peões Passados, Isolados e Dobrados; Bônus de Par de Bispos; Torres em Colunas Abertas/Semi-Abertas; Escudo de Peões do Rei e *Mop-Up Evaluation* para forçar mate rápido em finais ganhos. |
-| `search.py` | **Busca e Seleção de Lances** | *Iterative Deepening* (Aprofundamento Iterativo) + *Negamax com Poda Alpha-Beta* + *Principal Variation Search (PVS)* + *Tabela de Transposição* (Zobrist Hashing com flags `EXACT`, `LOWERBOUND`, `UPPERBOUND`) + *Quiescence Search* com *Delta Pruning* (evita Efeito Horizonte) + *Move Ordering* (`TT Move` -> Promoções -> Capturas `MVV-LVA` -> `Killer Moves` -> `History Heuristic`) + *Null Move Pruning* e *Late Move Reductions (LMR)*. |
-| `time_manager.py` | **Gestão Dinâmica de Tempo** | Orçamento adaptativo para `15m+10s` (FAQ Item 7) ou `25m+0s` (Edital) e *Armageddon* (FAQ Item 12); calcula `soft_limit` e `hard_limit` conforme a fase da partida e complexidade; estende o tempo se a avaliação cair (*score drop*) ou se o melhor lance mudar na última profundidade, preservando saldo de relógio para o desempate da Melhor de 3. |
-| `book_and_tb.py` | **Opening Book e Tablebases** | Repertório de Grandes Mestres embutido + suporte a livros Polyglot `.bin` na pasta `books/` com **trava estrita de 10 meios-lances (5 lances de cada cor)** (FAQ Item 3); integração com *Syzygy Tablebases* na pasta `syzygy/` restrita a **até 5 peças** (FAQ Item 4). |
-| `logger.py` | **Log Obrigatório da Banca** | Grava automaticamente a cada lance em `logs/partida_YYYYMMDD_HHMMSS.log` e `logs/ultima_partida_banca.txt` todos os 8 itens exigidos pelo **Item 9 do FAQ**: número do lance, cor, lance em UCI, profundidade atingida, nós avaliados, avaliação da posição, variante principal (PV) e tempo gasto. |
-| `main.py` | **Operação Presencial + Pondering** | Painel interativo de linha de comando seguindo os 4 passos do **Item 10 do FAQ** (anúncio em voz alta em UCI), com *Pondering* em background no turno adversário (**Item 13 do FAQ**) e comandos anti-falha (`undo`, `tempo`, `fen`, `forcar`). |
-| `uci.py` | **Protocolo UCI Padrão** | Permite conectar o motor em interfaces gráficas como Arena, CuteChess ou EnCroissant. |
+1. Notebook **na tomada**, modo de energia **desempenho**, outros programas fechados.
+2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM".
+3. Em `python main.py`, informe:
+   - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; Armageddon = opção 3, que já
+     ajusta o contempt sozinho: com Brancas evita o empate, com Pretas busca, pois o empate
+     classifica as Pretas — FAQ Item 12);
+   - Pondering **ligado** (FAQ Item 13);
+   - **segundos que o operador gasta por lance** (anunciar + mover a peça + apertar o
+     relógio + digitar o lance adversário). Meçam no treino! O padrão é 4 s.
+     A gestão de tempo desconta esse custo de todos os lances futuros — no Armageddon
+     sem incremento isso é o que evita perder por tempo.
+4. A cada ~10 lances, sincronize com o relógio físico: `tempo 11:42 12:05`
+   (nosso tempo e, opcional, o do adversário).
+5. O log exigido pelo FAQ Item 9 é gravado a cada lance em `logs/partida_*.log`
+   e espelhado em `logs/ultima_partida_banca.txt`.
+6. Comandos de emergência: `undo`, `fen <FEN>`, `forcar <lance>`, `tempo`, `ponder`,
+   `avaliar`, `log`, `ajuda`.
+7. Ajustes durante a partida (digitados na vez do adversário):
+   - `operador 2` — o operador ficou mais rápido/lento (segundos por lance);
+   - `fator 0.7` — pensar 30% menos. O desempate da Melhor de 3 é a soma do tempo restante
+     nas três partidas (FAQ Item 12): em posição morta, `fator 0.5` guarda relógio e
+     `fator 1` volta ao normal;
+   - `contempt 30` — evitar mais os empates contra adversário mais fraco.
 
 ---
 
-## Resumo Rápido para Responder à Banca na Arguição Técnica
+## Arquitetura
 
-1. **"Como funciona a busca do motor de vocês?"**
-   - Usamos **Iterative Deepening** combinado com **Negamax e Poda Alpha-Beta (PVS)**. Em vez de buscar em uma profundidade fixa e correr risco do tempo acabar no meio, calculamos profundidade 1, 2, 3, 4... A cada nova profundidade, usamos o melhor lance da profundidade anterior e a **Tabela de Transposição (Zobrist Hash)** para ordenar os melhores lances primeiro, gerando muito mais cortes na árvore.
-2. **"Como vocês evitam que o motor pare de calcular bem no meio de uma troca de peças (Efeito Horizonte)?"**
-   - Quando a profundidade chega a `0`, não chamamos a avaliação estática direto. Chamamos a **Busca de Quiescência (`_quiescence`)**, que continua avaliando apenas **capturas, promoções e saídas de xeque** (usando *Stand-Pat* e *Delta Pruning*) até que a posição fique "calma".
-3. **"Como vocês ordenam os lances antes de buscar?"**
-   - Na função `_order_moves`: 1º o lance da Tabela de Transposição (`tt_move`), 2º Promoções, 3º Capturas ordenadas por **MVV-LVA** (*Most Valuable Victim - Least Valuable Attacker*, ex: Peão captura Dama é testado antes de Dama captura Peão), 4º **Killer Moves** (dois lances quietos por nível que causaram corte Beta recentemente) e 5º **History Heuristic**.
-4. **"Como funciona a Função de Avaliação de vocês?"**
-   - Implementamos **Tapered Evaluation (PeSTO)** com operações de **Bitboards**. Cada peça tem duas tabelas posicionais: uma para o **Meio-Jogo (MG)** e outra para o **Final (EG)**. Conforme peças são trocadas, a variável `phase` (de 24 até 0) interpola suavemente a nota. Isso faz o Rei se esconder atrás dos peões no meio-jogo e ir para o centro atacar no final! Além disso, avaliamos Par de Bispos, Peões Passados/Isolados/Dobrados, Torres em Colunas Abertas e *Mop-Up* para dar xeque-mate rápido no final.
-5. **"Como funciona a Gestão de Tempo?"**
-   - No `TimeManager`, calculamos dois limites por lance: `soft_limit` (meta ideal para não iniciar uma nova profundidade) e `hard_limit` (teto máximo que interrompe a busca imediatamente via exceção `SearchTimeout`). Também monitoramos a estabilidade: se a nota cair mais de 35 centipawns ou se o melhor lance mudar na última profundidade, alocamos mais tempo para evitar erros táticos.
+| Arquivo | Responsabilidade |
+| :--- | :--- |
+| `search.py` | Busca: Iterative Deepening, Aspiração, PVS, TT, Quiescência, SEE, podas e reduções, geração de lances em estágios, repetição, tablebases na busca |
+| `evaluation.py` | Avaliação: Tapered Eval (PeSTO), mobilidade, segurança do rei, estrutura de peões com cache, peões passados, conhecimento de finais, Mop-Up |
+| `time_manager.py` | Tempo: orçamento por lance com custo do operador, limites soft/hard, extensão por instabilidade e fail-low |
+| `book_and_tb.py` | Livro (trava de 10 meios-lances, FAQ Item 3) e Syzygy (até 5 peças, FAQ Item 4) |
+| `main.py` | Interface do torneio (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |
+| `logger.py` | Log obrigatório da banca (FAQ Item 9) |
+| `uci.py` | Protocolo UCI (Arena, CuteChess, EnCroissant e `tools/match.py`) |
+| `tools/match.py` | Match automático entre duas versões do motor com Elo e intervalo de confiança |
+| `tools/baixar_syzygy.py` | Download das tablebases de 3-4-5 peças |
+| `tools/bench.py` | Benchmark de velocidade (rode no notebook do torneio) |
+| `tools/extrair_pgn.py`, `tools/gerar_dados.py`, `tools/texel.py` | Texel Tuning (experimental): dados rotulados e ajuste automático dos pesos. O resultado foi **rejeitado** no match (−150 Elo), então os pesos finais são os nossos ajustados à mão |
+| `test_engine.py` | Bateria de validação |
+
+---
+
+## Guia para a Arguição da Banca
+
+### 1. "Como funciona a busca?"
+**Iterative Deepening + Negamax Alpha-Beta com PVS.** Buscamos profundidade 1, 2, 3...
+Cada iteração reaproveita a anterior (Tabela de Transposição e melhor lance primeiro), e
+se o tempo acaba no meio de uma iteração usamos o melhor lance **já provado** nela.
+
+- **Janela de Aspiração:** a partir da profundidade 4 a raiz busca numa janela estreita
+  (±30 cp) em volta da nota anterior; se falhar, alarga. Janelas estreitas cortam mais.
+- **PVS (Principal Variation Search):** o 1º lance é buscado com janela cheia; os demais
+  com janela nula (`alpha, alpha+1`), só para provar que são piores. Se algum surpreender,
+  é rebuscado com janela cheia.
+- **Tabela de Transposição:** vetor de tamanho fixo (2^20 entradas). A chave de 64 bits é
+  calculada direto dos bitboards (`position_key`, ~0,2 µs, contra ~20 µs do Zobrist da
+  biblioteca). Guarda profundidade, tipo de limite (EXACT/LOWER/UPPER), melhor lance e
+  avaliação estática. Política de substituição preserva entradas profundas da busca atual.
+
+### 2. "Como vocês fazem a árvore ficar tão profunda em Python?"
+Python é lento (~20 mil nós/s), então o ganho vem de **não olhar o que não importa**:
+
+| Técnica | Ideia |
+| :--- | :--- |
+| Reverse Futility Pruning | Perto das folhas, se nota estática − margem ainda ≥ beta, corta |
+| Null Move Pruning | "Passamos a vez": se mesmo assim o rival não alcança beta, a posição é boa demais → corta (R adaptativo) |
+| Razoring | Nota muito abaixo de alpha a 1–2 plies do fim: confirma só com quiescência |
+| Late Move Pruning | Em profundidade baixa, depois de N lances quietos, os seguintes (mal ordenados) são podados |
+| Futility Pruning | Lance quieto que não dá xeque não consegue levantar alpha → podado |
+| Late Move Reductions | Lances tardios são buscados mais rasos (tabela `0,75 + ln(prof)·ln(nº)/2,25`); se surpreenderem, rebusca completa |
+| Internal Iterative Reduction | Sem lance da TT a ordenação é pior: reduz 1 ply |
+| Extensão de Xeque | Em xeque, busca 1 ply a mais (não para no meio de um ataque) |
+| Mate Distance Pruning | Não procura mates mais longos que um já encontrado |
+
+**Cuidados contra cegueira tática** (bugs que encontramos com a bateria WAC e corrigimos):
+lances que **dão xeque nunca são podados** (verificado sem executar o lance, por máscaras
+de ataque ao rei); a busca do lance nulo sempre tem pelo menos 1 ply completo (a quiescência
+sozinha não vê mates quietos); a margem do Razoring é grande; **sacrifícios com xeque**
+(captura "perdedora" que dá xeque, ex.: Bxh7+) não sofrem redução LMR.
+
+### 3. "E o Efeito Horizonte?"
+**Quiescence Search:** na profundidade 0 continuamos só com capturas e promoções a Dama
+(e todas as fugas, se estiver em xeque) até a posição ficar calma. Usa *stand-pat*,
+**Delta Pruning** (nem ganhando a peça alcança alpha → ignora) e **SEE**: capturas que
+perdem material (ex.: Dama toma peão defendido) são descartadas.
+
+**SEE (Static Exchange Evaluation)** simula a sequência de capturas numa casa, sempre com a
+peça menos valiosa, incluindo peças "em raio-x" atrás das que saem (`see_ge`).
+
+### 4. "Como ordenam os lances?"
+Geração **em estágios** (`_staged_moves`): 0) lance da TT → 1) capturas boas (MVV-LVA +
+SEE) e promoções → 2) killer moves e counter-move → 3) lances quietos pela History
+Heuristic (com "gravidade": bônus para o lance que cortou, penalidade para os quietos
+que falharam) → 4) capturas ruins. Como no nó de corte quase sempre os primeiros estágios
+bastam, os lances quietos (a parte cara) muitas vezes nem são gerados.
+
+### 5. "Como funciona a avaliação?"
+- **Tapered Eval:** cada termo tem valor de meio-jogo (MG) e de final (EG); a fase
+  (24 → 0, pelas peças em jogo) interpola os dois.
+- **Escore empacotado** `S(mg, eg) = mg + eg·2^16`: MG e EG no mesmo inteiro, uma soma por
+  termo (técnica dos motores modernos). Só desempacota no final.
+- **Material + PST** (valores no estilo PeSTO), **mobilidade** (casas seguras, fora do
+  ataque de peões inimigos), **segurança do rei** (unidades de ataque na zona do rei numa
+  tabela não-linear + escudo de peões + colunas abertas), **par de bispos**, **torres** em
+  colunas abertas/semiabertas e na 7ª.
+- **Ameaças:** peça atacada por peão inimigo e peça **pendurada** (atacada e sem defensor),
+  usando os mapas de ataque já calculados para a mobilidade (custo quase zero).
+- **Estrutura de peões com cache** (*pawn hash*): passados, isolados, dobrados e
+  conectados dependem só dos peões, então são calculados uma vez e reaproveitados.
+- **Peões passados no final:** distância dos reis à casa de promoção e caminho livre.
+- **Conhecimento de finais:** K+B/K+N/K+N+N não ganham; finais sem peões com pouca
+  vantagem e bispos de cores opostas são "escalados" para o empate; **Mop-Up** empurra o
+  rei sozinho para a borda (e para o canto da cor do bispo no mate de Bispo + Cavalo).
+- Avaliação **simétrica** (testada: espelhar a posição troca só o sinal).
+
+### 6. "Como funciona a gestão de tempo?"
+`tempo_alvo = (relógio − reserva + lances_restantes × (incremento − custo_do_operador)) / lances_restantes`
+
+- O **custo do operador** (anúncio + tabuleiro + relógio) entra na conta: no Armageddon
+  sem incremento o motor sabe que cada lance custa alguns segundos fora dele.
+- **Hard limit** (teto absoluto) interrompe a busca na hora; uma nova profundidade só
+  começa se houver tempo provável para terminá-la.
+- **Instabilidade:** se o melhor lance muda entre profundidades, se a nota cai ou se a
+  raiz falha baixo (*fail-low*), o motor pensa mais; se o lance está estável há várias
+  iterações, economiza.
+- Lance único (ex.: única fuga de xeque) é jogado na hora.
+
+### 7. Empates, repetição e "contempt"
+Detectamos repetição com uma pilha própria de chaves (só até o último lance irreversível)
+e a regra dos 50 lances. Empate vale **−15 cp** para nós (*contempt*): o motor evita
+repetir em posições iguais/levemente melhores, porque jogamos para ganhar.
+
+No **Armageddon** (FAQ Item 12) o empate classifica as Pretas, então o `main.py` ajusta o
+contempt sozinho: **+100 cp** com Brancas (empate é derrota) e **−100 cp** com Pretas (o motor
+passa a buscar repetição e finais empatados). O contempt é sempre contado a partir da nossa
+cor, inclusive no ponder e nos empates de tablebase.
+
+### 8. Livro e Tablebases
+- Livro embutido de linhas de GMs (e suporte a `.bin` Polyglot em `books/`) com trava
+  estrita de **10 meios-lances** (FAQ Item 3).
+- **Syzygy** (FAQ Item 4, até 5 peças): na **raiz** escolhe o lance pelo DTZ (vitória mais
+  rápida / derrota mais lenta, mate imediato primeiro); **dentro da busca** consulta WDL
+  logo após capturas, então o motor já "sabe" quais trocas levam a finais ganhos.
+
+### 9. Pondering (FAQ Item 13)
+Durante o turno adversário o motor pensa na posição após o lance que ele **prevê** (2º lance
+da PV). Ao digitar o lance real, o ponder para em milissegundos; se o lance foi o previsto,
+a Tabela de Transposição já tem a árvore pronta. A busca de ponder e a principal nunca rodam
+ao mesmo tempo (o motor tem um *lock* e o `stop_ponder` espera a thread terminar).
+
+### 10. "Os números da avaliação são de vocês?"
+O **código** da avaliação é todo nosso. As tabelas de material/PST partem dos valores
+públicos do PeSTO (Ronald Friederich, publicados na Chess Programming Wiki), um ponto de
+partida conhecido; por cima delas criamos e calibramos os demais termos (mobilidade,
+segurança do rei, peões, ameaças, finais). Também implementamos **Texel Tuning**
+(`tools/texel.py`): minimizar o erro entre a probabilidade prevista pela avaliação
+(sigmoide) e o resultado real de ~98 mil posições. O erro caiu 2,5%, mas no match os
+pesos ajustados **perderam** (−150 Elo) — então ficamos com os nossos. Lição: o que
+manda é o resultado em partidas, não o erro estatístico.
+
+### 11. "Como vocês sabem que cada mudança melhorou o motor?"
+Com `tools/match.py`: a versão nova joga contra a anterior dezenas de partidas a partir de
+aberturas equilibradas, cada abertura duas vezes com as cores trocadas. O script calcula a
+diferença de Elo com intervalo de confiança de 95% e a LOS (probabilidade de a nova ser
+mais forte). Para táticas usamos a bateria **WAC** (300 posições "Win At Chess").
+
+---
+
+## Ferramentas de teste
+
+```bash
+# Match versão nova x versão antiga (Elo com intervalo de 95% e LOS)
+python tools/match.py --a "python uci.py" --a-name NOVO --a-opt Log=false \
+                      --b "python ../versao_antiga/uci.py" --b-name ANTIGO \
+                      --games 100 --tc 20+0.2 --concurrency 3
+
+# Simular o operador humano (desconta 0,8 s extra por lance) em ritmo reduzido 3+2
+python tools/match.py ... --tc 180+2 --overhead 0.8 --a-opt "Move Overhead=800"
+```

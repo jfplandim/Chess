@@ -2,50 +2,121 @@
 Módulo de Busca e Seleção de Lances - Autoria Própria
 Chess Challenge III - ICEV 2026
 
-Implementa a árvore de decisão completa do motor:
-1. Iterative Deepening (Aprofundamento Iterativo)
-2. Negamax com Poda Alpha-Beta e Principal Variation Search (PVS)
-3. Tabela de Transposição (Zobrist Hashing) com flags EXACT, LOWERBOUND e UPPERBOUND
-4. Quiescence Search (Busca de Quiescência) com Stand-Pat e Delta Pruning contra Efeito Horizonte
-5. Ordenação de Lances (Move Ordering): TT Move -> Promoções -> Capturas (MVV-LVA) -> Killer Moves -> History Heuristic
-6. Otimizações de Poda: Null Move Pruning (Poda de Lance Nulo), Late Move Reductions (LMR) e Check Extension
+Árvore de decisão do motor (python-chess é usado SOMENTE para representar o
+tabuleiro e gerar lances legais – FAQ Item 14; toda a decisão é nossa):
+
+ 1. Iterative Deepening + Janela de Aspiração (Aspiration Windows) na raiz.
+ 2. Negamax Alpha-Beta com Principal Variation Search (PVS) e "fail-soft".
+ 3. Tabela de Transposição (TT) em vetor de tamanho fixo, chave de 64 bits
+    calculada direto dos bitboards (muito mais rápida que o Zobrist do Polyglot),
+    guardando profundidade, limite (EXACT/LOWER/UPPER), lance e avaliação estática.
+ 4. Quiescence Search: capturas/promoções (e todas as fugas quando em xeque),
+    com Stand-Pat, Delta Pruning e poda por SEE (Static Exchange Evaluation).
+ 5. Ordenação: lance da TT -> capturas boas (MVV-LVA + SEE) -> Killer Moves ->
+    Counter-Move -> History Heuristic (com "gravidade") -> capturas ruins.
+ 6. Podas seletivas: Reverse Futility Pruning, Razoring, Null Move Pruning
+    adaptativo, Late Move Pruning, Futility Pruning, poda de capturas ruins (SEE)
+    e Late Move Reductions (LMR) com tabela logarítmica.
+ 7. Extensão de Xeque, Internal Iterative Reduction e Mate Distance Pruning.
+ 8. Detecção de repetição própria (pilha de chaves) e regra dos 50 lances,
+    com "contempt" (pequena aversão ao empate, pois jogamos para ganhar).
+ 9. Tablebases Syzygy (até 5 peças – FAQ Item 4) dentro da busca (WDL) e na raiz (DTZ).
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+import math
 import threading
+import time
+from dataclasses import dataclass, field
+from operator import itemgetter
+
 import chess
-import chess.polyglot
+from chess import (
+    BB_SQUARES,
+    BB_KNIGHT_ATTACKS,
+    BB_KING_ATTACKS,
+    BB_PAWN_ATTACKS,
+    BB_DIAG_ATTACKS,
+    BB_DIAG_MASKS,
+    BB_RANK_ATTACKS,
+    BB_RANK_MASKS,
+    BB_FILE_ATTACKS,
+    BB_FILE_MASKS,
+    BB_RANKS,
+    WHITE,
+    BLACK,
+    PAWN,
+    KNIGHT,
+    BISHOP,
+    ROOK,
+    QUEEN,
+    KING,
+)
 
 from evaluation import (
+    evaluate,
     evaluate_board,
-    MG_PIECE_VALUES,
     MATE_SCORE,
     MATE_THRESHOLD,
-    DRAW_SCORE,
+    SEE_VALUES,
 )
 from time_manager import TimeManager
 from book_and_tb import BookAndTablebaseManager
 
-# Constantes da Tabela de Transposição
-TT_EXACT = 0
-TT_LOWERBOUND = 1  # Beta Cutoff (score >= beta)
-TT_UPPERBOUND = 2  # Falhou em superar Alpha (score <= alpha)
+# ==============================================================================
+# CONSTANTES
+# ==============================================================================
+INF = 32000
+MAX_PLY = 100
+TB_WIN = 20000            # vitória de tablebase (abaixo da faixa de mate)
+TB_WIN_THRESHOLD = TB_WIN - MAX_PLY
 
-MAX_PLY = 64
-MAX_Q_PLY = 8
+TT_EXACT = 0
+TT_LOWERBOUND = 1         # corte beta: score >= beta
+TT_UPPERBOUND = 2         # falhou baixo: score <= alpha
+
+NULL_MOVE = chess.Move.null()
+HISTORY_MAX = 16384
+BB_ALL = 0xFFFF_FFFF_FFFF_FFFF
+_first = itemgetter(0)
+
+# Categorias de ordenação (o valor final do lance é somado a elas)
+SCORE_QUEEN_PROMO = 4_000_000
+SCORE_GOOD_CAPTURE = 3_000_000
+SCORE_KILLER_1 = 2_000_000
+SCORE_KILLER_2 = 1_900_000
+SCORE_COUNTER = 1_800_000
+SCORE_BAD_CAPTURE = -1_000_000
+SCORE_UNDER_PROMO = -2_000_000
+
+KIND_QUIET = 0
+KIND_GOOD_TACTICAL = 1    # captura boa ou promoção a Dama
+KIND_BAD_TACTICAL = 2     # captura que perde material (SEE < 0) ou sub-promoção
+
+# Late Move Reductions: redução = 0.75 + ln(profundidade) * ln(nº do lance) / 2.25
+LMR_TABLE = [[0] * 64 for _ in range(64)]
+for _d in range(1, 64):
+    for _m in range(1, 64):
+        LMR_TABLE[_d][_m] = int(0.75 + math.log(_d) * math.log(_m) / 2.25)
+
+# Late Move Pruning: nº máximo de lances quietos examinados por profundidade
+LMP_TABLE = [[0] * 9, [0] * 9]
+for _d in range(1, 9):
+    LMP_TABLE[0][_d] = (3 + _d * _d) // 2   # posição piorando
+    LMP_TABLE[1][_d] = 3 + _d * _d          # posição melhorando
+
+RFP_MARGIN = 75           # Reverse Futility Pruning (por ply de profundidade)
+FUTILITY_BASE = 80
+FUTILITY_PER_DEPTH = 85
+RAZOR_BASE = 350          # Razoring: margem = base + fator * profundidade²
+RAZOR_PER_DEPTH2 = 250
+DELTA_MARGIN = 180        # Delta Pruning na quiescência
+ASPIRATION_START = 30
 
 
 class SearchTimeout(Exception):
-    """Exceção interna disparada quando o limite máximo de tempo (hard_limit) é atingido."""
-    pass
-
-
-@dataclass
-class TTEntry:
-    depth: int
-    score: int
-    flag: int
-    best_move: chess.Move | None
+    """Disparada internamente quando o tempo máximo (hard limit) acaba ou chega um 'stop'."""
 
 
 @dataclass
@@ -56,576 +127,933 @@ class SearchResult:
     nodes: int
     elapsed_sec: float
     pv: list[str]
-    source: str = "SEARCH"  # "SEARCH", "BOOK" ou "SYZYGY_TB"
+    source: str = "SEARCH"     # "SEARCH", "BOOK" ou "SYZYGY_TB"
+    seldepth: int = 0
+    pv_moves: list[chess.Move] = field(default_factory=list)
+
+
+def position_key(board: chess.Board) -> int:
+    """
+    Chave de 64 bits da posição calculada direto dos bitboards da python-chess.
+    Custa ~0,2 µs (o Zobrist do Polyglot custa ~20 µs por chamada!).
+    A casa de en passant só entra na chave se a captura en passant for possível.
+    """
+    ep = board.ep_square
+    if ep is not None:
+        turn = board.turn
+        if not (BB_PAWN_ATTACKS[not turn][ep] & board.pawns & board.occupied_co[turn]):
+            ep = None
+    return hash((
+        board.pawns, board.knights, board.bishops, board.rooks, board.queens, board.kings,
+        board.occupied_co[WHITE], board.turn, board.castling_rights, ep,
+    ))
+
+
+def _attackers_to(board: chess.Board, sq: int, occ: int) -> int:
+    """Todas as peças (das duas cores) que atacam a casa 'sq' dada a ocupação 'occ'."""
+    rq = board.rooks | board.queens
+    bq = board.bishops | board.queens
+    return (
+        (BB_KING_ATTACKS[sq] & board.kings)
+        | (BB_KNIGHT_ATTACKS[sq] & board.knights)
+        | (BB_RANK_ATTACKS[sq][BB_RANK_MASKS[sq] & occ] & rq)
+        | (BB_FILE_ATTACKS[sq][BB_FILE_MASKS[sq] & occ] & rq)
+        | (BB_DIAG_ATTACKS[sq][BB_DIAG_MASKS[sq] & occ] & bq)
+        | (BB_PAWN_ATTACKS[BLACK][sq] & board.pawns & board.occupied_co[WHITE])
+        | (BB_PAWN_ATTACKS[WHITE][sq] & board.pawns & board.occupied_co[BLACK])
+    )
+
+
+def see_ge(board: chess.Board, move: chess.Move, threshold: int = 0) -> bool:
+    """
+    Static Exchange Evaluation: simula a sequência de capturas na casa de destino
+    (sempre com a peça menos valiosa) e responde se o saldo material do lance é
+    >= threshold. Ex.: Dama captura peão defendido -> saldo negativo -> lance ruim.
+    """
+    if move.promotion:
+        return True
+    from_sq = move.from_square
+    to_sq = move.to_square
+    victim = board.piece_type_at(to_sq)
+    occ = board.occupied ^ BB_SQUARES[from_sq]
+    if victim is None:
+        if to_sq == board.ep_square and board.pawns & BB_SQUARES[from_sq]:
+            victim = PAWN
+            occ ^= BB_SQUARES[to_sq + (-8 if board.turn == WHITE else 8)]
+        else:
+            victim = 0
+    swap = SEE_VALUES[victim] - threshold
+    if swap < 0:
+        return False
+    attacker = board.piece_type_at(from_sq)
+    swap = SEE_VALUES[attacker] - swap
+    if swap <= 0:
+        return True
+
+    occ |= BB_SQUARES[to_sq]
+    stm = board.turn
+    attackers = _attackers_to(board, to_sq, occ)
+    bq = board.bishops | board.queens
+    rq = board.rooks | board.queens
+    res = 1
+    while True:
+        stm = not stm
+        attackers &= occ
+        stm_attackers = attackers & board.occupied_co[stm]
+        if not stm_attackers:
+            break
+        res ^= 1
+        b = stm_attackers & board.pawns
+        if b:
+            swap = SEE_VALUES[PAWN] - swap
+            if swap < res:
+                break
+            occ ^= b & -b
+            attackers |= BB_DIAG_ATTACKS[to_sq][BB_DIAG_MASKS[to_sq] & occ] & bq
+            continue
+        b = stm_attackers & board.knights
+        if b:
+            swap = SEE_VALUES[KNIGHT] - swap
+            if swap < res:
+                break
+            occ ^= b & -b
+            continue
+        b = stm_attackers & board.bishops
+        if b:
+            swap = SEE_VALUES[BISHOP] - swap
+            if swap < res:
+                break
+            occ ^= b & -b
+            attackers |= BB_DIAG_ATTACKS[to_sq][BB_DIAG_MASKS[to_sq] & occ] & bq
+            continue
+        b = stm_attackers & board.rooks
+        if b:
+            swap = SEE_VALUES[ROOK] - swap
+            if swap < res:
+                break
+            occ ^= b & -b
+            attackers |= (
+                BB_RANK_ATTACKS[to_sq][BB_RANK_MASKS[to_sq] & occ]
+                | BB_FILE_ATTACKS[to_sq][BB_FILE_MASKS[to_sq] & occ]
+            ) & rq
+            continue
+        b = stm_attackers & board.queens
+        if b:
+            swap = SEE_VALUES[QUEEN] - swap
+            if swap < res:
+                break
+            occ ^= b & -b
+            attackers |= (BB_DIAG_ATTACKS[to_sq][BB_DIAG_MASKS[to_sq] & occ] & bq) | (
+                (BB_RANK_ATTACKS[to_sq][BB_RANK_MASKS[to_sq] & occ]
+                 | BB_FILE_ATTACKS[to_sq][BB_FILE_MASKS[to_sq] & occ]) & rq
+            )
+            continue
+        # Só sobrou o Rei para capturar: só é possível se o adversário não tiver mais atacantes
+        if attackers & board.occupied_co[not stm] & occ:
+            return bool(res ^ 1)
+        return bool(res)
+    return bool(res)
+
+
+def check_squares(board: chess.Board) -> list[int]:
+    """
+    Para cada tipo de peça, as casas de onde ela daria xeque DIRETO no rei adversário.
+    Permite saber se um lance dá xeque sem executá-lo (usado para não podar xeques).
+    """
+    them = not board.turn
+    ksq = (board.kings & board.occupied_co[them]).bit_length() - 1
+    occ = board.occupied
+    diag = BB_DIAG_ATTACKS[ksq][BB_DIAG_MASKS[ksq] & occ]
+    ortho = BB_RANK_ATTACKS[ksq][BB_RANK_MASKS[ksq] & occ] | BB_FILE_ATTACKS[ksq][BB_FILE_MASKS[ksq] & occ]
+    return [0, BB_PAWN_ATTACKS[them][ksq], BB_KNIGHT_ATTACKS[ksq], diag, ortho, diag | ortho, 0]
 
 
 class SearchEngine:
-    def __init__(self, tt_max_entries: int = 250_000):
-        self.tt: dict[int, TTEntry] = {}
-        self.tt_max_entries = tt_max_entries
-
-        # Estruturas de ordenação de lances quietos
-        self.killer_moves: list[list[chess.Move | None]] = [
-            [None, None] for _ in range(MAX_PLY)
-        ]
-        # history[cor][from_sq][to_sq]
-        self.history: list[list[list[int]]] = [
-            [[0] * 64 for _ in range(64)],
-            [[0] * 64 for _ in range(64)],
-        ]
-
-        self.nodes = 0
-        self.time_manager: TimeManager | None = None
-        self.stop_event: threading.Event | None = None
+    def __init__(self, tt_bits: int = 20, tt_max_entries: int | None = None):
+        if tt_max_entries is not None:  # compatibilidade com a versão anterior
+            tt_bits = max(16, min(24, int(math.log2(max(1, tt_max_entries))) + 1))
         self.book_tb = BookAndTablebaseManager()
+        self.contempt = 15          # centipawns de aversão ao empate (jogamos para ganhar)
+        self.our_color: bool | None = None  # nossa cor; None = lado que joga na raiz (UCI)
+        self._draw_root = -15       # valor do empate para quem joga na raiz (ver _prepare_root)
+        self._lock = threading.Lock()
+        self.resize_tt(tt_bits)
+        self.history = [[0] * 4096, [0] * 4096]   # [cor][origem*64 + destino]
+        self.counter_moves = [0] * 4096           # resposta que refutou o lance anterior
+        self.killers = [[-1, -1] for _ in range(MAX_PLY + 2)]
+        self.nodes = 0
+        self.seldepth = 0
+        self.stop_event: threading.Event | None = None
+        self.time_manager: TimeManager | None = None
+        self.board = chess.Board()
+        self.hash_stack: list[int] = []
+        self.eval_stack = [0] * (MAX_PLY + 2)
+        self.move_stack_ply: list[chess.Move | None] = [None] * (MAX_PLY + 2)
+        self.pv_table: list[list[chess.Move]] = [[] for _ in range(MAX_PLY + 2)]
+        self.root_turn = WHITE
+        self.hard_deadline = 0.0
+        self.max_nodes = 0
+        self.iter_best_move: chess.Move | None = None
+        self.iter_best_score = -INF
+        self.tb_pieces = 0
+
+    # ------------------------------------------------------------------
+    # Tabela de Transposição
+    # ------------------------------------------------------------------
+    def resize_tt(self, tt_bits: int) -> None:
+        self.tt_size = 1 << tt_bits
+        self.tt_mask = self.tt_size - 1
+        self.tt: list[tuple | None] = [None] * self.tt_size
+        self.tt_age = 0
 
     def clear_cache(self) -> None:
-        """Limpa a Tabela de Transposição e heurísticas históricas para uma nova partida."""
-        self.tt.clear()
-        self._reset_heuristics()
+        """Nova partida: limpa TT, históricos e cache de peões."""
+        from evaluation import clear_eval_cache
 
-    def _reset_heuristics(self) -> None:
-        for ply in range(MAX_PLY):
-            self.killer_moves[ply][0] = None
-            self.killer_moves[ply][1] = None
-        for c in (0, 1):
-            for f_sq in range(64):
-                row = self.history[c][f_sq]
-                for t_sq in range(64):
-                    row[t_sq] //= 4  # Decaimento suave entre lances para aproveitar memória recente
+        with self._lock:
+            self.tt = [None] * self.tt_size
+            self.tt_age = 0
+            self.history = [[0] * 4096, [0] * 4096]
+            self.counter_moves = [0] * 4096
+            clear_eval_cache()
 
-    def _check_stop(self) -> None:
-        """Verifica periodicamente se o tempo acabou ou se o Pondering foi interrompido."""
-        if (self.nodes & 127) == 0:
-            if self.stop_event is not None and self.stop_event.is_set():
-                raise SearchTimeout()
-            if self.time_manager is not None and self.time_manager.should_abort_search():
-                raise SearchTimeout()
-
-    @staticmethod
-    def _score_to_tt(score: int, ply: int) -> int:
-        """Ajusta pontuação de Mate para armazenamento independente do ply na Tabela de Transposição."""
+    def _tt_store(self, key, depth, flag, score, move, static_eval, ply) -> None:
+        # Pontuações de mate são guardadas relativas à posição (independentes do ply)
         if score >= MATE_THRESHOLD:
-            return score + ply
-        if score <= -MATE_THRESHOLD:
-            return score - ply
-        return score
+            score += ply
+        elif score <= -MATE_THRESHOLD:
+            score -= ply
+        idx = key & self.tt_mask
+        old = self.tt[idx]
+        if old is not None:
+            if old[0] == key:
+                if move is None:
+                    move = old[4]
+                if static_eval is None:
+                    static_eval = old[5]
+            # Política de substituição: preserva entradas bem mais profundas da busca atual
+            if old[6] == self.tt_age and old[1] > depth + 2 and (old[0] != key or flag != TT_EXACT):
+                return
+        self.tt[idx] = (key, depth, flag, score, move, static_eval, self.tt_age)
 
-    @staticmethod
-    def _score_from_tt(score: int, ply: int) -> int:
-        """Recupera pontuação de Mate da Tabela de Transposição ajustada para o ply atual."""
-        if score >= MATE_THRESHOLD:
-            return score - ply
-        if score <= -MATE_THRESHOLD:
-            return score + ply
-        return score
+    # ------------------------------------------------------------------
+    # Controle de tempo / interrupção
+    # ------------------------------------------------------------------
+    def _check_time(self) -> None:
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise SearchTimeout()
+        if self.hard_deadline and time.perf_counter() >= self.hard_deadline:
+            raise SearchTimeout()
+        if self.max_nodes and self.nodes >= self.max_nodes:
+            raise SearchTimeout()
 
-    def _store_tt(
-        self,
-        zhash: int,
-        depth: int,
-        score: int,
-        flag: int,
-        best_move: chess.Move | None,
-        ply: int,
-    ) -> None:
-        """Armazena posição na Tabela de Transposição com política de substituição por profundidade."""
-        if len(self.tt) >= self.tt_max_entries and zhash not in self.tt:
-            # Limpeza parcial rápida caso exceda o limite de entradas
-            self.tt.clear()
+    def _draw_score(self, ply: int) -> int:
+        # Contempt: empate vale -contempt para NÓS e +contempt para o adversário. Nos plies
+        # pares joga quem estava na vez na raiz; nos ímpares, o outro lado (sinal invertido).
+        return self._draw_root if (ply & 1) == 0 else -self._draw_root
 
-        existing = self.tt.get(zhash)
-        if existing is None or depth >= existing.depth or flag == TT_EXACT:
-            move_to_save = best_move if best_move is not None else (existing.best_move if existing else None)
-            self.tt[zhash] = TTEntry(
-                depth=depth,
-                score=self._score_to_tt(score, ply),
-                flag=flag,
-                best_move=move_to_save,
-            )
+    def _is_repetition(self, key: int, halfmove_clock: int) -> bool:
+        stack = self.hash_stack
+        n = len(stack)
+        i = n - 4
+        stop = n - halfmove_clock
+        if stop < 0:
+            stop = 0
+        while i >= stop:
+            if stack[i] == key:
+                return True
+            i -= 2
+        return False
 
-    def _order_moves(
-        self,
-        board: chess.Board,
-        moves: list[chess.Move],
-        tt_move: chess.Move | None,
-        ply: int,
-    ) -> list[chess.Move]:
-        """
-        Ordena os lances para maximizar os cortes da Poda Alpha-Beta:
-        1. Lance da Tabela de Transposição (TT Move)
-        2. Promoções para Dama/Cavalo
-        3. Capturas ordenadas por MVV-LVA (Vítima Mais Valiosa - Atacante Menos Valioso)
-        4. Killer Moves (lances quietos que geraram corte Beta no mesmo ply)
-        5. History Heuristic (lances quietos historicamente fortes na busca)
-        """
-        k1, k2 = (
-            (self.killer_moves[ply][0], self.killer_moves[ply][1])
-            if ply < MAX_PLY
-            else (None, None)
-        )
-        hist_side = self.history[int(board.turn)]
-
-        def move_priority(move: chess.Move) -> int:
-            if tt_move is not None and move == tt_move:
-                return 2_000_000
-
-            score = 0
-            if move.promotion is not None:
-                score += 900_000 + MG_PIECE_VALUES.get(move.promotion, 0)
-
-            if board.is_capture(move):
-                victim_pt = board.piece_type_at(move.to_square)
-                if victim_pt is None:
-                    # Captura En Passant
-                    victim_val = 100
+    # ------------------------------------------------------------------
+    # Ordenação de lances
+    # ------------------------------------------------------------------
+    def _score_moves(self, board, moves, ply, skip_move, prev_move):
+        them = board.occupied_co[not board.turn]
+        piece_type_at = board.piece_type_at
+        ep = board.ep_square
+        k0, k1 = self.killers[ply]
+        counter = self.counter_moves[prev_move.from_square * 64 + prev_move.to_square] if prev_move else -1
+        hist = self.history[board.turn]
+        skip_to = skip_move.to_square if skip_move is not None else -1
+        scored = []
+        append = scored.append
+        for m in moves:
+            to = m.to_square
+            if to == skip_to and m == skip_move:
+                continue
+            promo = m.promotion
+            if them & BB_SQUARES[to]:
+                victim = piece_type_at(to)
+                attacker = piece_type_at(m.from_square)
+                if promo is not None:
+                    if promo == QUEEN:
+                        append((SCORE_QUEEN_PROMO + victim * 100, m, KIND_GOOD_TACTICAL))
+                    else:
+                        append((SCORE_UNDER_PROMO + victim * 100, m, KIND_BAD_TACTICAL))
+                elif SEE_VALUES[attacker] <= SEE_VALUES[victim] or see_ge(board, m, 0):
+                    append((SCORE_GOOD_CAPTURE + victim * 100 - attacker, m, KIND_GOOD_TACTICAL))
                 else:
-                    victim_val = MG_PIECE_VALUES.get(victim_pt, 100)
-                attacker_pt = board.piece_type_at(move.from_square) or chess.PAWN
-                attacker_val = MG_PIECE_VALUES.get(attacker_pt, 100)
-                # MVV-LVA: prioriza capturar peça grande usando peça pequena
-                score += 500_000 + (victim_val * 10) - attacker_val
+                    append((SCORE_BAD_CAPTURE + victim * 100 - attacker, m, KIND_BAD_TACTICAL))
+            elif promo is not None:
+                if promo == QUEEN:
+                    append((SCORE_QUEEN_PROMO, m, KIND_GOOD_TACTICAL))
+                else:
+                    append((SCORE_UNDER_PROMO, m, KIND_BAD_TACTICAL))
+            elif to == ep and piece_type_at(m.from_square) == PAWN:
+                append((SCORE_GOOD_CAPTURE + 99, m, KIND_GOOD_TACTICAL))
             else:
-                if move == k1:
-                    score += 400_000
-                elif move == k2:
-                    score += 390_000
+                idx = m.from_square * 64 + to
+                if idx == k0:
+                    append((SCORE_KILLER_1, m, KIND_QUIET))
+                elif idx == k1:
+                    append((SCORE_KILLER_2, m, KIND_QUIET))
+                elif idx == counter:
+                    append((SCORE_COUNTER, m, KIND_QUIET))
                 else:
-                    score += min(300_000, hist_side[move.from_square][move.to_square])
+                    append((hist[idx], m, KIND_QUIET))
+        scored.sort(key=_first, reverse=True)
+        return scored
 
-            return score
-
-        return sorted(moves, key=move_priority, reverse=True)
-
-    def _quiescence(
-        self, board: chess.Board, alpha: int, beta: int, ply: int, q_ply: int = 0
-    ) -> int:
+    def _staged_moves(self, board, tt_move, ply, prev_move):
         """
-        Busca de Quiescência (Estabilidade):
-        Continua analisando capturas e promoções após depth == 0 até que a posição
-        esteja calma, eliminando o Efeito Horizonte.
+        Geração de lances EM ESTÁGIOS (só gera o que for preciso):
+          0) lance da TT  1) capturas boas e promoções a Dama  2) killers e counter-move
+          3) lances quietos ordenados pelo History  4) capturas ruins e sub-promoções.
+        Em nós de corte (beta cutoff) quase sempre um dos primeiros estágios basta,
+        e a geração dos lances quietos (a parte mais cara) nem acontece.
         """
-        self._check_stop()
+        if tt_move is not None:
+            yield SCORE_QUEEN_PROMO * 2, tt_move, self._move_kind(board, tt_move)
+            tt_to = tt_move.to_square
+            tried = [tt_move.from_square * 64 + tt_to]
+        else:
+            tt_to = -1
+            tried = []
+
+        turn = board.turn
+        them = board.occupied_co[not turn]
+        occ = board.occupied
+        piece_type_at = board.piece_type_at
+
+        # Estágio 1: capturas (inclui en passant) + promoções
+        good = []
+        bad = []
+        for m in board.generate_legal_captures():
+            to = m.to_square
+            if to == tt_to and m == tt_move:
+                continue
+            promo = m.promotion
+            if them & BB_SQUARES[to]:
+                victim = piece_type_at(to)
+            else:
+                victim = PAWN  # en passant
+            if promo is not None:
+                if promo == QUEEN:
+                    good.append((SCORE_QUEEN_PROMO + victim * 100, m, KIND_GOOD_TACTICAL))
+                else:
+                    bad.append((SCORE_UNDER_PROMO + victim * 100, m, KIND_BAD_TACTICAL))
+                continue
+            attacker = piece_type_at(m.from_square)
+            if SEE_VALUES[attacker] <= SEE_VALUES[victim] or see_ge(board, m, 0):
+                good.append((SCORE_GOOD_CAPTURE + victim * 100 - attacker, m, KIND_GOOD_TACTICAL))
+            else:
+                bad.append((SCORE_BAD_CAPTURE + victim * 100 - attacker, m, KIND_BAD_TACTICAL))
+        promo_from = board.pawns & board.occupied_co[turn] & BB_RANKS[6 if turn == WHITE else 1]
+        if promo_from:
+            for m in board.generate_legal_moves(promo_from, ~occ & BB_RANKS[7 if turn == WHITE else 0]):
+                if m.to_square == tt_to and m == tt_move:
+                    continue
+                if m.promotion == QUEEN:
+                    good.append((SCORE_QUEEN_PROMO, m, KIND_GOOD_TACTICAL))
+                else:
+                    bad.append((SCORE_UNDER_PROMO, m, KIND_BAD_TACTICAL))
+        if good:
+            if len(good) > 1:
+                good.sort(key=_first, reverse=True)
+            yield from good
+
+        # Estágio 2: killers e counter-move (validados: precisam ser legais e quietos)
+        k0, k1 = self.killers[ply]
+        counter = self.counter_moves[prev_move.from_square * 64 + prev_move.to_square] if prev_move else -1
+        for idx, sc in ((k0, SCORE_KILLER_1), (k1, SCORE_KILLER_2), (counter, SCORE_COUNTER)):
+            if idx < 0 or idx in tried:
+                continue
+            to = idx & 63
+            if occ & BB_SQUARES[to]:
+                continue
+            m = chess.Move(idx >> 6, to)
+            if board.is_legal(m):
+                tried.append(idx)
+                yield sc, m, KIND_QUIET
+
+        # Estágio 3: lances quietos ordenados pela History Heuristic
+        hist = self.history[turn]
+        ep = board.ep_square
+        pawns_us = board.pawns & board.occupied_co[turn]
+        quiets = []
+        # Obs.: a python-chess gera o roque como "rei -> casa da própria torre", então as
+        # torres com direito de roque precisam estar na máscara de destino.
+        quiet_mask = (~occ & BB_ALL) | (board.castling_rights & board.occupied_co[turn])
+        for m in board.generate_legal_moves(BB_ALL, quiet_mask):
+            if m.promotion is not None:
+                continue  # já gerada no estágio 1
+            to = m.to_square
+            frm = m.from_square
+            if to == ep and pawns_us & BB_SQUARES[frm] and (frm & 7) != (to & 7):
+                continue  # en passant já gerado no estágio 1
+            idx = frm * 64 + to
+            if idx in tried:
+                continue
+            quiets.append((hist[idx], m, KIND_QUIET))
+        if quiets:
+            quiets.sort(key=_first, reverse=True)
+            yield from quiets
+
+        # Estágio 4: capturas que perdem material e sub-promoções
+        if bad:
+            bad.sort(key=_first, reverse=True)
+            yield from bad
+
+    def _move_kind(self, board, move) -> int:
+        to = move.to_square
+        if move.promotion is not None:
+            return KIND_GOOD_TACTICAL if move.promotion == QUEEN else KIND_BAD_TACTICAL
+        if board.occupied_co[not board.turn] & BB_SQUARES[to]:
+            return KIND_GOOD_TACTICAL
+        if to == board.ep_square and board.pawns & BB_SQUARES[move.from_square]:
+            return KIND_GOOD_TACTICAL
+        return KIND_QUIET
+
+    def _update_quiet_stats(self, board, move, depth, ply, quiets_tried, prev_move) -> None:
+        bonus = min(16 * depth * depth + 32 * depth, 1600)
+        hist = self.history[board.turn]
+        idx = move.from_square * 64 + move.to_square
+        hist[idx] += bonus - hist[idx] * bonus // HISTORY_MAX
+        for q in quiets_tried:
+            qi = q.from_square * 64 + q.to_square
+            hist[qi] += -bonus - hist[qi] * bonus // HISTORY_MAX
+        killers = self.killers[ply]
+        if killers[0] != idx:
+            killers[1] = killers[0]
+            killers[0] = idx
+        if prev_move is not None:
+            self.counter_moves[prev_move.from_square * 64 + prev_move.to_square] = idx
+
+    # ------------------------------------------------------------------
+    # Quiescence Search
+    # ------------------------------------------------------------------
+    def _qsearch(self, alpha: int, beta: int, ply: int) -> int:
+        board = self.board
         self.nodes += 1
+        if (self.nodes & 1023) == 0:
+            self._check_time()
+        if ply > self.seldepth:
+            self.seldepth = ply
+        if ply >= MAX_PLY:
+            return evaluate(board)
 
-        if board.is_repetition(2) or board.halfmove_clock >= 100:
-            return DRAW_SCORE
+        key = position_key(board)
+        entry = self.tt[key & self.tt_mask]
+        tt_eval = None
+        if entry is not None and entry[0] == key:
+            s = entry[3]
+            if s >= MATE_THRESHOLD:
+                s -= ply
+            elif s <= -MATE_THRESHOLD:
+                s += ply
+            f = entry[2]
+            if f == TT_EXACT or (f == TT_LOWERBOUND and s >= beta) or (f == TT_UPPERBOUND and s <= alpha):
+                return s
+            tt_eval = entry[5]
 
         in_check = board.is_check()
-
-        # Se atingiu o limite máximo da quiescência, retorna avaliação estática
-        if q_ply >= MAX_Q_PLY:
-            return evaluate_board(board, check_terminal=in_check)
-
-        if not in_check:
-            stand_pat = evaluate_board(board)
+        if in_check:
+            stand_pat = None
+            best = -MATE_SCORE + ply
+            moves = list(board.generate_legal_moves())
+            if not moves:
+                return best  # xeque-mate
+            ordered = self._score_moves(board, moves, ply, None, None)
+        else:
+            stand_pat = tt_eval if tt_eval is not None else evaluate(board)
             if stand_pat >= beta:
-                return beta
+                if tt_eval is None:
+                    self._tt_store(key, -1, TT_LOWERBOUND, stand_pat, None, stand_pat, ply)
+                return stand_pat
+            best = stand_pat
             if stand_pat > alpha:
                 alpha = stand_pat
-
-            # Gera apenas capturas e promoções
-            moves = [
-                m
-                for m in board.legal_moves
-                if board.is_capture(m) or m.promotion is not None
-            ]
-        else:
-            # Em xeque, precisamos testar todas as saídas de xeque legais
-            stand_pat = -MATE_SCORE + ply
-            moves = list(board.legal_moves)
+            moves = list(board.generate_legal_captures())
+            # Promoções sem captura (só a Dama interessa aqui)
+            promo_from = board.pawns & board.occupied_co[board.turn] & BB_RANKS[6 if board.turn == WHITE else 1]
+            if promo_from:
+                for m in board.generate_legal_moves(promo_from, ~board.occupied & BB_RANKS[7 if board.turn == WHITE else 0]):
+                    if m.promotion == QUEEN:
+                        moves.append(m)
             if not moves:
-                return -MATE_SCORE + ply
+                if tt_eval is None:
+                    self._tt_store(key, -1, TT_UPPERBOUND, best, None, stand_pat, ply)
+                return best
+            ordered = self._score_moves(board, moves, ply, None, None)
 
-        moves = self._order_moves(board, moves, None, ply)
+        orig_alpha = alpha
+        best_move = None
+        piece_type_at = board.piece_type_at
+        push = board.push
+        pop = board.pop
+        for mscore, move, kind in ordered:
+            if stand_pat is not None:
+                if kind == KIND_BAD_TACTICAL:
+                    break  # capturas que perdem material (SEE < 0) e sub-promoções: poda
+                if move.promotion is None:
+                    victim = piece_type_at(move.to_square)
+                    gain = SEE_VALUES[victim] if victim else 100
+                    if stand_pat + gain + DELTA_MARGIN <= alpha:
+                        continue  # Delta Pruning: nem ganhando a peça alcançamos alpha
+            push(move)
+            score = -self._qsearch(-beta, -alpha, ply + 1)
+            pop()
+            if score > best:
+                best = score
+                if score > alpha:
+                    best_move = move
+                    if score >= beta:
+                        break
+                    alpha = score
 
-        for move in moves:
-            # Delta Pruning (Poda por Delta): se não estamos em xeque e não é promoção,
-            # verifica se a peça capturada tem chance matemática de melhorar Alpha
-            if not in_check and move.promotion is None:
-                victim_pt = board.piece_type_at(move.to_square)
-                victim_val = MG_PIECE_VALUES.get(victim_pt, 100) if victim_pt else 100
-                if stand_pat + victim_val + 200 < alpha:
-                    continue
+        if best >= beta:
+            flag = TT_LOWERBOUND
+        elif best > orig_alpha:
+            flag = TT_EXACT
+        else:
+            flag = TT_UPPERBOUND
+        self._tt_store(key, -1, flag, best, best_move, stand_pat, ply)
+        return best
 
-            board.push(move)
-            score = -self._quiescence(board, -beta, -alpha, ply + 1, q_ply + 1)
-            board.pop()
+    # ------------------------------------------------------------------
+    # Negamax Alpha-Beta (PVS)
+    # ------------------------------------------------------------------
+    def _search(self, depth: int, alpha: int, beta: int, ply: int, do_null: bool = True) -> int:
+        board = self.board
+        pv_node = beta - alpha > 1
+        self.pv_table[ply] = []
 
-            if score >= beta:
-                return beta
-            if score > alpha:
-                alpha = score
+        key = position_key(board)
 
-        return alpha
-
-    def _negamax(
-        self,
-        board: chess.Board,
-        depth: int,
-        alpha: int,
-        beta: int,
-        ply: int,
-        allow_null: bool = True,
-    ) -> int:
-        """
-        Algoritmo Negamax com Poda Alpha-Beta, Tabela de Transposição,
-        Null Move Pruning e Late Move Reductions (LMR).
-        """
-        self._check_stop()
-
-        # Detecção rápida de empate na árvore (Repetição ou 50 lances ou Material Insuficiente)
-        if ply > 0:
-            if (
-                board.is_repetition(2)
-                or board.halfmove_clock >= 100
-                or board.is_insufficient_material()
-            ):
-                return DRAW_SCORE
-
-            # Mate Distance Pruning: se já encontramos um mate mais curto, poda!
-            alpha = max(alpha, -MATE_SCORE + ply)
-            beta = min(beta, MATE_SCORE - ply - 1)
+        if ply:
+            hmc = board.halfmove_clock
+            if hmc >= 100:
+                return self._draw_score(ply)
+            if hmc >= 4 and self._is_repetition(key, hmc):
+                return self._draw_score(ply)
+            if not (board.pawns | board.rooks | board.queens) and (board.knights | board.bishops).bit_count() <= 1:
+                return self._draw_score(ply)  # material insuficiente
+            if ply >= MAX_PLY:
+                return evaluate(board)
+            # Mate Distance Pruning: não adianta procurar mate mais longo que um já encontrado
+            if alpha < -MATE_SCORE + ply:
+                alpha = -MATE_SCORE + ply
+            if beta > MATE_SCORE - ply - 1:
+                beta = MATE_SCORE - ply - 1
             if alpha >= beta:
                 return alpha
 
         in_check = board.is_check()
-
-        # Extensão de Xeque (Check Extension): não para de calcular no meio de um xeque
-        if in_check and ply < MAX_PLY - 2:
-            depth += 1
-
+        if in_check:
+            depth += 1  # Extensão de Xeque
         if depth <= 0:
-            return self._quiescence(board, alpha, beta, ply)
+            return self._qsearch(alpha, beta, ply)
 
         self.nodes += 1
-        orig_alpha = alpha
+        if (self.nodes & 1023) == 0:
+            self._check_time()
+        if ply > self.seldepth:
+            self.seldepth = ply
 
-        # 1. Consulta à Tabela de Transposição (Zobrist Hash)
-        zhash = chess.polyglot.zobrist_hash(board)
-        tt_entry = self.tt.get(zhash)
+        # 1. Tabela de Transposição
+        entry = self.tt[key & self.tt_mask]
         tt_move = None
+        tt_eval = None
+        if entry is not None and entry[0] == key:
+            tt_move = entry[4]
+            tt_eval = entry[5]
+            if not pv_node and entry[1] >= depth:
+                s = entry[3]
+                if s >= MATE_THRESHOLD:
+                    s -= ply
+                elif s <= -MATE_THRESHOLD:
+                    s += ply
+                f = entry[2]
+                if f == TT_EXACT or (f == TT_LOWERBOUND and s >= beta) or (f == TT_UPPERBOUND and s <= alpha):
+                    return s
 
-        if tt_entry is not None:
-            tt_move = tt_entry.best_move
-            if ply > 0 and tt_entry.depth >= depth:
-                tt_score = self._score_from_tt(tt_entry.score, ply)
-                if tt_entry.flag == TT_EXACT:
-                    return tt_score
-                elif tt_entry.flag == TT_LOWERBOUND and tt_score >= beta:
-                    return tt_score
-                elif tt_entry.flag == TT_UPPERBOUND and tt_score <= alpha:
-                    return tt_score
+        # 2. Tablebases Syzygy dentro da busca (após capturas/lances de peão com <= 5 peças)
+        if ply and self.tb_pieces and board.halfmove_clock == 0 and board.occupied.bit_count() <= self.tb_pieces:
+            wdl = self.book_tb.probe_wdl(board)
+            if wdl is not None:
+                if wdl > 1:
+                    tb_score = TB_WIN - ply
+                elif wdl < -1:
+                    tb_score = -TB_WIN + ply
+                else:
+                    tb_score = self._draw_score(ply)  # empate de tablebase também leva o contempt
+                self._tt_store(key, MAX_PLY, TT_EXACT, tb_score, None, None, ply)
+                return tb_score
 
-        # 2. Null Move Pruning (Poda de Lance Nulo)
-        # Se não estamos em xeque e temos peças além de peões, passamos a vez:
-        # se mesmo assim o oponente não conseguir superar Beta, a posição é tão boa que podemos podar!
-        non_pawn_material = (
-            board.knights | board.bishops | board.rooks | board.queens
-        ) & board.occupied_co[board.turn]
-        if (
-            allow_null
-            and ply > 0
-            and depth >= 3
-            and not in_check
-            and non_pawn_material != 0
-        ):
-            board.push(chess.Move.null())
-            reduction = 2 if depth <= 6 else 3
-            null_score = -self._negamax(
-                board,
-                depth - 1 - reduction,
-                -beta,
-                -beta + 1,
-                ply + 1,
-                allow_null=False,
-            )
-            board.pop()
-            if null_score >= beta:
-                return beta
+        # 3. Avaliação estática (reaproveitada da TT quando disponível)
+        if in_check:
+            static_eval = -INF
+            improving = False
+        else:
+            static_eval = tt_eval if tt_eval is not None else evaluate(board)
+            improving = ply >= 2 and static_eval > self.eval_stack[ply - 2]
+        self.eval_stack[ply] = static_eval
 
-        # 3. Geração e Ordenação de Lances Legais
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            if in_check:
-                return -MATE_SCORE + ply  # Xeque-Mate! (prefere mates mais rápidos via +ply)
-            return DRAW_SCORE  # Afogamento (Stalemate)!
+        prev_move = self.move_stack_ply[ply - 1] if ply else None
 
-        ordered_moves = self._order_moves(board, legal_moves, tt_move, ply)
+        if not pv_node and not in_check:
+            # 3a. Reverse Futility Pruning: posição tão boa que mesmo com margem passa de beta
+            if depth <= 7 and abs(beta) < TB_WIN_THRESHOLD:
+                margin = RFP_MARGIN * depth - (35 if improving else 0)
+                if static_eval - margin >= beta:
+                    return static_eval - margin
 
-        best_score = -MATE_SCORE - 100
-        best_move = ordered_moves[0]
+            # 3b. Razoring: posição muito ruim perto das folhas -> confirma só com quiescência
+            if depth <= 2 and static_eval + RAZOR_BASE + RAZOR_PER_DEPTH2 * depth * depth < alpha:
+                v = self._qsearch(alpha, alpha + 1, ply)
+                if v <= alpha:
+                    return v
 
-        for move_idx, move in enumerate(ordered_moves):
-            is_capture = board.is_capture(move)
-            is_promotion = move.promotion is not None
+            # 3c. Null Move Pruning: "passamos a vez"; se ainda assim o rival não alcança beta, cortamos
+            if (
+                do_null
+                and depth >= 3
+                and static_eval >= beta
+                and abs(beta) < TB_WIN_THRESHOLD
+                and (board.knights | board.bishops | board.rooks | board.queens) & board.occupied_co[board.turn]
+            ):
+                r = 3 + depth // 4 + min(3, (static_eval - beta) // 200)
+                if r > depth - 2:
+                    r = depth - 2  # garante 1 ply completo: a quiescência sozinha não vê ameaças de mate
+                self.hash_stack.append(key)
+                self.move_stack_ply[ply] = None
+                board.push(NULL_MOVE)
+                v = -self._search(depth - 1 - r, -beta, -beta + 1, ply + 1, False)
+                board.pop()
+                self.hash_stack.pop()
+                if v >= beta:
+                    return beta if v >= TB_WIN_THRESHOLD else v
 
-            board.push(move)
+        # 4. Internal Iterative Reduction: sem lance da TT, a ordenação é pior -> reduz 1 ply
+        if depth >= 4 and tt_move is None:
+            depth -= 1
+
+        # 5. Laço de lances (estágio 0: lance da TT antes de gerar os demais)
+        best_score = -INF
+        best_move = None
+        move_count = 0
+        quiets_tried: list[chess.Move] = []
+        orig_alpha = alpha
+        push = board.push
+        pop = board.pop
+        hash_stack = self.hash_stack
+        move_stack_ply = self.move_stack_ply
+
+        if tt_move is not None and not board.is_legal(tt_move):
+            tt_move = None
+
+        chk_sq = None
+        piece_type_at = board.piece_type_at
+        futility_ok = (not in_check) and depth <= 6 and static_eval + FUTILITY_BASE + FUTILITY_PER_DEPTH * depth <= alpha
+        lmp_limit = LMP_TABLE[1 if improving else 0][depth] if depth <= 8 else 999
+
+        for mscore, move, kind in self._staged_moves(board, tt_move, ply, prev_move):
+            quiet = kind == KIND_QUIET
+
+            # Podas por lance (nunca na raiz, nunca em xeque e só depois de já termos um
+            # lance que não perde). Lances que dão XEQUE nunca são podados (táticas/mates).
+            if ply and best_score > -TB_WIN_THRESHOLD and not in_check:
+                if quiet:
+                    # Late Move Pruning (muitos lances quietos já vistos) ou
+                    # Futility Pruning (nota estática muito abaixo de alpha)
+                    if move_count >= lmp_limit or futility_ok:
+                        if chk_sq is None:
+                            chk_sq = check_squares(board)
+                        if not (chk_sq[piece_type_at(move.from_square)] & BB_SQUARES[move.to_square]):
+                            continue
+                elif kind == KIND_BAD_TACTICAL and depth <= 3:
+                    # captura perdedora (SEE < 0) perto das folhas
+                    if chk_sq is None:
+                        chk_sq = check_squares(board)
+                    if not (chk_sq[piece_type_at(move.from_square)] & BB_SQUARES[move.to_square]):
+                        continue
+
+            hash_stack.append(key)
+            move_stack_ply[ply] = move
+            push(move)
             gives_check = board.is_check()
 
-            # Principal Variation Search (PVS) + Late Move Reductions (LMR)
-            if move_idx == 0:
-                score = -self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            move_count += 1
+            new_depth = depth - 1
+
+            if move_count == 1:
+                score = -self._search(new_depth, -beta, -alpha, ply + 1)
             else:
-                # LMR: reduz profundidade para lances quietos mais ao fim da lista ordenada
-                do_lmr = (
-                    depth >= 3
-                    and move_idx >= 3
-                    and not in_check
-                    and not gives_check
-                    and not is_capture
-                    and not is_promotion
-                )
-                if do_lmr:
-                    r = 1 if move_idx < 8 else 2
-                    score = -self._negamax(
-                        board, max(1, depth - 1 - r), -alpha - 1, -alpha, ply + 1
-                    )
-                else:
-                    score = alpha + 1  # Força busca na janela nula PVS
+                # Late Move Reductions
+                r = 0
+                # Sacrifício com xeque (captura "ruim" que dá xeque) não é reduzido: é o
+                # padrão típico das combinações de mate (ex.: Bxh7+, Dxg7+).
+                if depth >= 3 and kind != KIND_GOOD_TACTICAL and move_count > 2 and not (gives_check and kind == KIND_BAD_TACTICAL):
+                    r = LMR_TABLE[depth if depth < 64 else 63][move_count if move_count < 64 else 63]
+                    if pv_node:
+                        r -= 1
+                    if not improving:
+                        r += 1
+                    if gives_check:
+                        r -= 1
+                    if mscore >= SCORE_COUNTER:
+                        r -= 1  # killer / counter-move
+                    elif quiet:
+                        r -= mscore // 8000  # history alto reduz menos; baixo reduz mais
+                    if r > new_depth - 1:
+                        r = new_depth - 1
+                    if r < 0:
+                        r = 0
+                score = -self._search(new_depth - r, -alpha - 1, -alpha, ply + 1)
+                if score > alpha and r > 0:
+                    score = -self._search(new_depth, -alpha - 1, -alpha, ply + 1)
+                if score > alpha and score < beta:
+                    score = -self._search(new_depth, -beta, -alpha, ply + 1)
 
-                # Se o lance reduzido superou Alpha, re-busca na profundidade normal
-                if score > alpha:
-                    score = -self._negamax(
-                        board, depth - 1, -alpha - 1, -alpha, ply + 1
-                    )
-                    if score > alpha and score < beta:
-                        score = -self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
-
-            board.pop()
+            pop()
+            hash_stack.pop()
 
             if score > best_score:
                 best_score = score
-                best_move = move
+                if score > alpha:
+                    best_move = move
+                    if pv_node:
+                        self.pv_table[ply] = [move] + self.pv_table[ply + 1]
+                    if ply == 0:
+                        self.iter_best_move = move
+                        self.iter_best_score = score
+                    if score >= beta:
+                        if quiet:
+                            self._update_quiet_stats(board, move, depth, ply, quiets_tried, prev_move)
+                        break
+                    alpha = score
+            if quiet:
+                quiets_tried.append(move)
 
-            if score > alpha:
-                alpha = score
-                if alpha >= beta:
-                    # Corte Beta! Atualiza Killer Moves e History Heuristic se for lance quieto
-                    if not is_capture and not is_promotion and ply < MAX_PLY:
-                        if self.killer_moves[ply][0] != move:
-                            self.killer_moves[ply][1] = self.killer_moves[ply][0]
-                            self.killer_moves[ply][0] = move
-                        bonus = depth * depth
-                        self.history[int(board.turn)][move.from_square][move.to_square] += bonus
-                    break
+        if move_count == 0:
+            # Nenhum lance legal: xeque-mate ou afogamento
+            if best_score == -INF:
+                return -MATE_SCORE + ply if in_check else self._draw_score(ply)
 
-        # 4. Salva resultado na Tabela de Transposição
-        if best_score <= orig_alpha:
-            flag = TT_UPPERBOUND
-        elif best_score >= beta:
+        if best_score >= beta:
             flag = TT_LOWERBOUND
-        else:
+        elif best_score > orig_alpha:
             flag = TT_EXACT
-
-        self._store_tt(zhash, depth, best_score, flag, best_move, ply)
+        else:
+            flag = TT_UPPERBOUND
+        self._tt_store(key, depth, flag, best_score, best_move, None if in_check else static_eval, ply)
         return best_score
 
-    def extract_pv(self, board: chess.Board, max_len: int = 8) -> list[str]:
-        """Extrai a Variante Principal (PV) navegando pela Tabela de Transposição."""
-        pv_uci: list[str] = []
-        visited_hashes: set[int] = set()
-        sim_board = board.copy()
+    # ------------------------------------------------------------------
+    # Raiz: Aspiration Windows
+    # ------------------------------------------------------------------
+    def _aspiration(self, depth: int, prev_score: int | None) -> int:
+        if depth < 4 or prev_score is None or abs(prev_score) >= TB_WIN_THRESHOLD:
+            return self._search(depth, -INF, INF, 0)
+        delta = ASPIRATION_START
+        alpha = max(prev_score - delta, -INF)
+        beta = min(prev_score + delta, INF)
+        while True:
+            score = self._search(depth, alpha, beta, 0)
+            if score <= alpha:
+                beta = (alpha + beta) // 2
+                alpha = max(score - delta, -INF)
+                if self.time_manager is not None:
+                    self.time_manager.notify_fail_low()
+            elif score >= beta:
+                beta = min(score + delta, INF)
+            else:
+                return score
+            delta += delta // 2 + 10
+            if delta > 1000:
+                alpha, beta = -INF, INF
 
-        for _ in range(max_len):
-            zhash = chess.polyglot.zobrist_hash(sim_board)
-            if zhash in visited_hashes:
-                break
-            visited_hashes.add(zhash)
-
-            entry = self.tt.get(zhash)
-            if entry is None or entry.best_move is None:
-                break
-            move = entry.best_move
-            if move not in sim_board.legal_moves:
-                break
-
-            pv_uci.append(move.uci())
-            sim_board.push(move)
-
-        return pv_uci
+    # ------------------------------------------------------------------
+    # Interface principal
+    # ------------------------------------------------------------------
+    def _prepare_root(self, board: chess.Board) -> None:
+        self.board = board.copy(stack=False)
+        # Chaves das posições anteriores da partida (para detectar repetição)
+        keys = []
+        b = board.copy()
+        back = min(len(b.move_stack), b.halfmove_clock)
+        for _ in range(back):
+            b.pop()
+            keys.append(position_key(b))
+        keys.reverse()
+        self.hash_stack = keys
+        self.root_turn = board.turn
+        # O contempt é contado a partir da NOSSA cor. No ponder sem lance previsto a raiz é a
+        # vez do adversário: sem isto o sinal se inverteria e a TT guardaria empates trocados.
+        us = board.turn if self.our_color is None else self.our_color
+        self._draw_root = -self.contempt if board.turn == us else self.contempt
+        self.nodes = 0
+        self.seldepth = 0
+        self.killers = [[-1, -1] for _ in range(MAX_PLY + 2)]
+        self.move_stack_ply = [None] * (MAX_PLY + 2)
+        self.eval_stack = [0] * (MAX_PLY + 2)
+        self.pv_table = [[] for _ in range(MAX_PLY + 2)]
+        for c in (0, 1):
+            h = self.history[c]
+            for i in range(4096):
+                h[i] //= 2  # envelhecimento do histórico entre lances
+        self.tt_age = (self.tt_age + 1) & 0xFFFF
 
     def search_best_move(
         self,
         board: chess.Board,
         time_manager: TimeManager,
-        max_depth: int = 20,
+        max_depth: int = 64,
         use_book: bool = True,
         use_tb: bool = True,
         stop_event: threading.Event | None = None,
         verbose: bool = True,
+        infinite: bool = False,
+        max_nodes: int = 0,
+        info_callback=None,
     ) -> SearchResult:
         """
-        Executa a seleção completa do melhor lance usando:
-        1. Opening Book (até 10 meios-lances / 5 lances de cada cor - FAQ Item 3)
-        2. Syzygy Tablebases (até 5 peças - FAQ Item 4)
-        3. Iterative Deepening + Negamax Alpha-Beta com Gestão Dinâmica de Tempo
+        Seleção completa do lance:
+        1. Livro de aberturas (até 10 meios-lances - FAQ Item 3)
+        2. Tablebases Syzygy na raiz (até 5 peças - FAQ Item 4)
+        3. Iterative Deepening + Aspiration + Negamax/PVS com gestão dinâmica de tempo
         """
+        with self._lock:
+            return self._search_root(
+                board, time_manager, max_depth, use_book, use_tb, stop_event,
+                verbose, infinite, max_nodes, info_callback,
+            )
+
+    def _search_root(self, board, time_manager, max_depth, use_book, use_tb, stop_event,
+                     verbose, infinite, max_nodes, info_callback) -> SearchResult:
         self.time_manager = time_manager
         self.stop_event = stop_event
-        self.nodes = 0
-        self._reset_heuristics()
-
         legal_moves = list(board.legal_moves)
         if not legal_moves:
             raise ValueError("Não existem lances legais na posição atual.")
 
-        # Inicia cronômetro do lance
-        soft_limit, hard_limit = time_manager.allocate_time(board, len(legal_moves))
+        time_manager.allocate_time(board, len(legal_moves))
+        if infinite:
+            self.hard_deadline = 0.0
+        else:
+            self.hard_deadline = time_manager.start_time + time_manager.hard_limit
+        self.max_nodes = max_nodes
 
-        # 1. Verifica Opening Book (estritamente até o lance 5 / 10 meios-lances - FAQ Item 3)
+        # 1. Livro de aberturas
         if use_book:
             book_move = self.book_tb.get_book_move(board)
             if book_move is not None:
                 board.push(book_move)
-                score_cp = -evaluate_board(board)
+                score_cp = -evaluate(board)
                 board.pop()
                 elapsed = time_manager.elapsed()
                 if verbose:
-                    print(
-                        f"  [LIVRO DE ABERTURAS] Lance teórico encontrado: {book_move.uci()} ({elapsed:.3f}s)"
-                    )
-                return SearchResult(
-                    best_move=book_move,
-                    score_cp=score_cp,
-                    depth=1,
-                    nodes=1,
-                    elapsed_sec=elapsed,
-                    pv=[book_move.uci()],
-                    source="BOOK",
-                )
+                    print(f"  [LIVRO DE ABERTURAS] Lance teórico encontrado: {book_move.uci()} ({elapsed:.3f}s)")
+                return SearchResult(book_move, score_cp, 1, 1, elapsed, [book_move.uci()], "BOOK", 0, [book_move])
 
-        # 2. Verifica Tablebases Syzygy de até 5 peças (FAQ Item 4)
+        # 2. Tablebases na raiz
+        self.tb_pieces = self.book_tb.max_pieces() if use_tb else 0
         if use_tb:
             tb_move, tb_score = self.book_tb.get_syzygy_move(board)
             if tb_move is not None and tb_score is not None:
                 elapsed = time_manager.elapsed()
                 if verbose:
-                    print(
-                        f"  [TABLEBASE 5 PEÇAS] Lance perfeito encontrado: {tb_move.uci()} ({elapsed:.3f}s)"
-                    )
-                return SearchResult(
-                    best_move=tb_move,
-                    score_cp=tb_score,
-                    depth=1,
-                    nodes=1,
-                    elapsed_sec=elapsed,
-                    pv=[tb_move.uci()],
-                    source="SYZYGY_TB",
-                )
+                    print(f"  [TABLEBASE 5 PEÇAS] Lance perfeito encontrado: {tb_move.uci()} ({elapsed:.3f}s)")
+                return SearchResult(tb_move, tb_score, 1, 1, elapsed, [tb_move.uci()], "SYZYGY_TB", 0, [tb_move])
 
-        # Se houver apenas 1 lance legal obrigado, executa rápido com avaliação de profundidade 1
-        if len(legal_moves) == 1:
-            only_move = legal_moves[0]
-            board.push(only_move)
+        # Lance único: responde na hora (sem gastar relógio)
+        if len(legal_moves) == 1 and not infinite:
+            only = legal_moves[0]
+            board.push(only)
             score_cp = -evaluate_board(board, check_terminal=True)
             board.pop()
             elapsed = time_manager.elapsed()
-            return SearchResult(
-                best_move=only_move,
-                score_cp=score_cp,
-                depth=1,
-                nodes=1,
-                elapsed_sec=elapsed,
-                pv=[only_move.uci()],
-                source="SEARCH",
-            )
+            return SearchResult(only, score_cp, 1, 1, elapsed, [only.uci()], "SEARCH", 0, [only])
 
-        # 3. Iterative Deepening (Aprofundamento Iterativo: Profundidade 1, 2, 3, ..., max_depth)
+        # 3. Iterative Deepening
+        self._prepare_root(board)
         best_move = legal_moves[0]
-        best_score = evaluate_board(board)
+        best_score = 0
+        best_pv: list[chess.Move] = [best_move]
         completed_depth = 0
-        best_pv = [best_move.uci()]
+        prev_score: int | None = None
 
-        for current_depth in range(1, max_depth + 1):
+        for depth in range(1, max_depth + 1):
+            self.iter_best_move = None
+            self.iter_best_score = -INF
+            self.seldepth = 0
             try:
-                # Ordena os lances na raiz colocando o melhor lance da profundidade anterior em 1º lugar
-                root_moves = self._order_moves(board, legal_moves, best_move, ply=0)
-
-                iter_best_move = root_moves[0]
-                iter_best_score = -MATE_SCORE - 100
-                alpha = -MATE_SCORE - 100
-                beta = MATE_SCORE + 100
-
-                for move_idx, move in enumerate(root_moves):
-                    self._check_stop()
-                    board.push(move)
-
-                    if move_idx == 0:
-                        score = -self._negamax(
-                            board, current_depth - 1, -beta, -alpha, ply=1
-                        )
-                    else:
-                        # PVS na raiz
-                        score = -self._negamax(
-                            board, current_depth - 1, -alpha - 1, -alpha, ply=1
-                        )
-                        if score > alpha:
-                            score = -self._negamax(
-                                board, current_depth - 1, -beta, -alpha, ply=1
-                            )
-
-                    board.pop()
-
-                    if score > iter_best_score:
-                        iter_best_score = score
-                        iter_best_move = move
-
-                    if score > alpha:
-                        alpha = score
-
-                # Atualiza a Tabela de Transposição para a raiz
-                zhash = chess.polyglot.zobrist_hash(board)
-                self._store_tt(
-                    zhash, current_depth, iter_best_score, TT_EXACT, iter_best_move, ply=0
-                )
-
-                # Verifica estabilidade para gestão dinâmica de tempo
-                move_changed = iter_best_move != best_move
-                score_drop = max(0, best_score - iter_best_score) if completed_depth > 0 else 0
-                time_manager.adjust_for_instability(
-                    move_changed, score_drop, current_depth
-                )
-
-                best_move = iter_best_move
-                best_score = iter_best_score
-                completed_depth = current_depth
-                best_pv = self.extract_pv(board, max_len=current_depth)
-                if not best_pv or best_pv[0] != best_move.uci():
-                    best_pv = [best_move.uci()] + [m for m in best_pv if m != best_move.uci()]
-
-                elapsed = time_manager.elapsed()
-                nps = int(self.nodes / max(0.001, elapsed))
-
-                if verbose:
-                    pv_preview = " ".join(best_pv[:6])
-                    print(
-                        f"  info depth {completed_depth:>2} | score {best_score:>+6d} cp | "
-                        f"nodes {self.nodes:>8d} ({nps:>6d} n/s) | time {elapsed:>5.2f}s | pv {pv_preview}"
-                    )
-
-                # Se já encontrou Xeque-Mate forçado, não precisa gastar mais tempo!
-                if abs(best_score) >= MATE_THRESHOLD:
-                    plies_to_mate = MATE_SCORE - abs(best_score)
-                    if current_depth >= plies_to_mate:
-                        break
-
-                # Verifica se já atingiu o soft_limit para não iniciar nova profundidade
-                if time_manager.should_stop_iteration():
-                    break
-
+                score = self._aspiration(depth, prev_score)
             except SearchTimeout:
-                # Tempo limite estourado no meio da profundidade atual:
-                # Retornamos com segurança total o melhor lance da última profundidade concluída!
+                # Tempo acabou no meio da iteração: aproveita o melhor lance JÁ PROVADO nesta
+                # profundidade (se houver); senão fica com o da última profundidade completa.
+                if self.iter_best_move is not None and completed_depth > 0:
+                    if self.iter_best_move != best_move:
+                        best_move = self.iter_best_move
+                        best_score = self.iter_best_score
+                        pv = self.pv_table[0]
+                        best_pv = list(pv) if pv and pv[0] == best_move else [best_move]
+                break
+
+            completed_depth = depth
+            pv = self.pv_table[0]
+            new_best = pv[0] if pv else (self.iter_best_move or best_move)
+            move_changed = new_best != best_move
+            score_drop = (prev_score - score) if prev_score is not None else 0
+            best_move = new_best
+            best_score = score
+            best_pv = list(pv) if pv and pv[0] == best_move else [best_move]
+            prev_score = score
+
+            elapsed = time_manager.elapsed()
+            if info_callback is not None:
+                info_callback(depth, self.seldepth, score, self.nodes, elapsed, best_pv)
+            if verbose:
+                nps = int(self.nodes / max(0.001, elapsed))
+                pv_preview = " ".join(m.uci() for m in best_pv[:8])
+                print(
+                    f"  info depth {depth:>2}/{self.seldepth:<2} | score {score:>+6d} cp | "
+                    f"nodes {self.nodes:>8d} ({nps:>6d} n/s) | time {elapsed:>6.2f}s | pv {pv_preview}"
+                )
+
+            if infinite:
+                continue
+            # Mate forçado já encontrado e confirmado: não precisa pensar mais
+            if abs(score) >= MATE_THRESHOLD and depth >= (MATE_SCORE - abs(score)) + 2:
+                break
+            time_manager.adjust_for_instability(move_changed, score_drop, depth)
+            if time_manager.should_stop_iteration():
                 break
 
         elapsed = time_manager.elapsed()
+        # Segurança extra: o lance devolvido é SEMPRE legal na posição real
+        if best_move not in legal_moves:
+            best_move = legal_moves[0]
+            best_pv = [best_move]
         return SearchResult(
             best_move=best_move,
             score_cp=best_score,
             depth=max(1, completed_depth),
             nodes=max(1, self.nodes),
             elapsed_sec=elapsed,
-            pv=best_pv,
+            pv=[m.uci() for m in best_pv],
             source="SEARCH",
+            seldepth=self.seldepth,
+            pv_moves=list(best_pv),
         )
