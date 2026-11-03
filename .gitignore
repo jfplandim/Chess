@@ -1,0 +1,17 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Arquivos de geração de PDF e documentos locais de estudo
+gerar_pdf.py
+*.pdf
+*.html
+
+# Logs de partidas de teste locais
+logs/
