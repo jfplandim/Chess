@@ -15,6 +15,7 @@ Verifica:
  8. A busca SEMPRE devolve lance legal (posições aleatórias, pouco tempo)
  9. Pondering: inicia/para rápido e nunca roda junto com a busca principal
 10. Log obrigatório da banca (FAQ Item 9)
+11. Contempt contado a partir da nossa cor (Armageddon, FAQ Item 12)
 """
 
 import os
@@ -208,6 +209,36 @@ def run_all_tests() -> None:
         content = f.read()
     assert res_11.best_move.uci() in content
     print(f"  -> [OK] Log gravado em: {logger.log_path}")
+
+    # 11. Contempt pela nossa cor (Armageddon - FAQ Item 12: empate classifica as Pretas)
+    print("\n[TESTE 11] Contempt contado a partir da nossa cor (Armageddon, FAQ Item 12)...")
+    rep = chess.Board()  # Pretas a jogar: ...Cg8 repete a posição inicial
+    for uci in ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1"]:
+        rep.push_uci(uci)
+    arm = SearchEngine(tt_bits=16)
+    arm.our_color = chess.BLACK
+    arm.contempt = -100  # Pretas no Armageddon: empate = classificação
+    res = arm.search_best_move(rep, fixed_tm(1.0), use_book=False, use_tb=False, verbose=False)
+    assert res.best_move.uci() == "f6g8", f"Pretas deveriam repetir com f6g8, jogaram {res.best_move.uci()}"
+    print(f"  -> Pretas, contempt -100: repetem com {res.best_move.uci()} ({res.score_cp:+d} cp)")
+    arm = SearchEngine(tt_bits=16)
+    arm.our_color = chess.BLACK
+    arm.contempt = 100  # sinal trocado: agora o empate é ruim para nós
+    res = arm.search_best_move(rep, fixed_tm(1.0), use_book=False, use_tb=False, verbose=False)
+    assert res.best_move.uci() != "f6g8", "Com contempt +100 as Pretas não deveriam repetir"
+    print(f"  -> Pretas, contempt +100: evitam a repetição com {res.best_move.uci()}")
+    # Ponder sem lance previsto: a raiz é a vez do adversário (Brancas), mas o contempt é o NOSSO
+    adv = chess.Board()
+    for uci in ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6"]:
+        adv.push_uci(uci)
+    arm = SearchEngine(tt_bits=16)
+    arm.our_color = chess.BLACK
+    arm.contempt = -100
+    arm._prepare_root(adv)
+    assert arm._draw_score(0) == -100 and arm._draw_score(1) == 100, "Sinal do empate invertido no ponder"
+    res = arm.search_best_move(adv, fixed_tm(1.0), use_book=False, use_tb=False, verbose=False)
+    assert res.best_move.uci() != "f3g1", "O adversário simulado não deveria aceitar o empate que nos classifica"
+    print(f"  -> Raiz do adversário (ponder): Brancas evitam o empate que classifica as Pretas ({res.best_move.uci()})")
 
     print("\n======================================================================")
     print(f"   TODOS OS TESTES PASSARAM ({time.time() - t_start:.0f}s). MOTOR PRONTO PARA O TORNEIO!")

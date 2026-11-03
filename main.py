@@ -20,6 +20,9 @@ from time_manager import TimeManager
 from search import SearchEngine
 from logger import MatchLogger
 
+# Armageddon (FAQ Item 12): o empate classifica as Pretas, então o contempt muda de sinal pela cor
+ARMAGEDDON_CONTEMPT = 100
+
 PIECE_NAMES_PT = {
     chess.PAWN: "Peão",
     chess.KNIGHT: "Cavalo",
@@ -178,7 +181,7 @@ def print_help_menu() -> None:
         "  tempo <nosso> [adv]  : Sincroniza relógio em MM:SS ou segundos (ex: tempo 12:30 11:45)\n"
         "  operador <segundos>  : Ajusta o tempo gasto pelo operador por lance (ex: operador 2)\n"
         "  fator <x>            : Multiplica o tempo de pensamento (ex: fator 0.7 economiza relógio)\n"
-        "  contempt <cp>        : Aversão ao empate em centipawns (padrão 15; maior = evita mais empates)\n"
+        "  contempt <cp>        : Aversão ao empate em cp (padrão 15; maior = evita empate; negativo = busca)\n"
         "  fen <string_fen>     : Atualiza posição do tabuleiro conforme tabuleiro físico\n"
         "  forcar <lance_uci>   : Força a execução de um lance específico\n"
         "  ponder               : Ativa/Desativa o cálculo no turno do adversário (Pondering)\n"
@@ -256,14 +259,22 @@ def run_tournament_cli() -> None:
         operator_overhead=operator_overhead,
     )
     engine = SearchEngine()
+    engine.our_color = our_color  # contempt contado a partir da nossa cor, inclusive no ponder
     logger = MatchLogger(team_color=color_name)
     ponder_ctrl = PonderController(engine)
+    if tc_choice == "3":
+        # Armageddon (FAQ Item 12): empate classifica as Pretas. Com Brancas o empate é derrota
+        # (evitar); com Pretas vale a classificação (buscar repetição e finais empatados).
+        engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
+        logger.log_event(f"Armageddon: contempt {engine.contempt:+d} cp (empate classifica as Pretas - FAQ Item 12)")
 
     print("\n------------------------------------------------------------------------------")
     print(f"  Partida Iniciada! Jogando de: {color_name}")
     print(f"  Relógio Configurado         : {init_min:.0f} min + {inc_sec:.0f}s/lance")
     print(f"  Pondering (FAQ Item 13)     : {'ATIVADO' if use_ponder else 'DESATIVADO'}")
     print(f"  Custo do operador por lance : {operator_overhead:.1f}s (descontado do relógio interno)")
+    print(f"  {'Contempt (empate)':<28}: {engine.contempt:+d} cp"
+          + ("  (Armageddon: empate classifica as Pretas)" if tc_choice == "3" else ""))
     print("  DICA: sincronize o relógio a cada ~10 lances com 'tempo MM:SS [MM:SS]'.")
     print(f"  Log Oficial (FAQ Item 9)    : {logger.log_path}")
     print(f"  Espelho Rápido p/ Banca     : {logger.txt_mirror_path}")

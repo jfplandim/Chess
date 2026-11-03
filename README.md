@@ -11,6 +11,24 @@ Motor de xadrez em Python para o **III Chess Challenge — ICEV 2026**. A biblio
 
 ---
 
+## Declaração para o credenciamento (FAQ Item 1)
+
+| Item | Declaração |
+| :--- | :--- |
+| Projeto-base | [`jfplandim/Chess`](https://github.com/jfplandim/Chess), commit `ccee6c7` |
+| Autoria própria (Item 2) | Avaliação (`evaluation.py`), busca (`search.py`) e gestão de tempo (`time_manager.py`) |
+| Biblioteca (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; declarada em `requirements.txt` |
+| Livro (Item 3) | Linhas clássicas de abertura embutidas em `book_and_tb.py`, até 10 meios-lances |
+| Tablebases (Item 4) | Syzygy de até 5 peças, baixadas antes do evento com `tools/baixar_syzygy.py` |
+| Tabelas da avaliação | Valores públicos do PeSTO como ponto de partida (seção 10 do guia da banca) |
+| Hardware (Itens 5 a 8) | Notebook da equipe, só CPU, sem GPU |
+| Modelos (Item 15) | Nenhum peso de modelo |
+| Rede (Item 14) | Nenhuma requisição externa durante as partidas |
+
+Livro, tablebases e tabelas PeSTO são de terceiros e não contam como autoria da equipe.
+
+---
+
 ## Resultado da versão 2 (medido)
 
 | Métrica | Versão anterior | Versão atual |
@@ -66,7 +84,9 @@ python main.py
 1. Notebook **na tomada**, modo de energia **desempenho**, outros programas fechados.
 2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM".
 3. Em `python main.py`, informe:
-   - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; Armageddon = opção 3);
+   - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; Armageddon = opção 3, que já
+     ajusta o contempt sozinho: com Brancas evita o empate, com Pretas busca, pois o empate
+     classifica as Pretas — FAQ Item 12);
    - Pondering **ligado** (FAQ Item 13);
    - **segundos que o operador gasta por lance** (anunciar + mover a peça + apertar o
      relógio + digitar o lance adversário). Meçam no treino! O padrão é 4 s.
@@ -80,7 +100,9 @@ python main.py
    `avaliar`, `log`, `ajuda`.
 7. Ajustes durante a partida (digitados na vez do adversário):
    - `operador 2` — o operador ficou mais rápido/lento (segundos por lance);
-   - `fator 0.7` — pensar 30% menos (ex.: se o desempate da Melhor de 3 olhar o relógio);
+   - `fator 0.7` — pensar 30% menos. O desempate da Melhor de 3 é a soma do tempo restante
+     nas três partidas (FAQ Item 12): em posição morta, `fator 0.5` guarda relógio e
+     `fator 1` volta ao normal;
    - `contempt 30` — evitar mais os empates contra adversário mais fraco.
 
 ---
@@ -193,6 +215,11 @@ bastam, os lances quietos (a parte cara) muitas vezes nem são gerados.
 Detectamos repetição com uma pilha própria de chaves (só até o último lance irreversível)
 e a regra dos 50 lances. Empate vale **−15 cp** para nós (*contempt*): o motor evita
 repetir em posições iguais/levemente melhores, porque jogamos para ganhar.
+
+No **Armageddon** (FAQ Item 12) o empate classifica as Pretas, então o `main.py` ajusta o
+contempt sozinho: **+100 cp** com Brancas (empate é derrota) e **−100 cp** com Pretas (o motor
+passa a buscar repetição e finais empatados). O contempt é sempre contado a partir da nossa
+cor, inclusive no ponder e nos empates de tablebase.
 
 ### 8. Livro e Tablebases
 - Livro embutido de linhas de GMs (e suporte a `.bin` Polyglot em `books/`) com trava

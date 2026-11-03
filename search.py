@@ -59,7 +59,6 @@ from evaluation import (
     evaluate_board,
     MATE_SCORE,
     MATE_THRESHOLD,
-    DRAW_SCORE,
     SEE_VALUES,
 )
 from time_manager import TimeManager
@@ -275,6 +274,8 @@ class SearchEngine:
             tt_bits = max(16, min(24, int(math.log2(max(1, tt_max_entries))) + 1))
         self.book_tb = BookAndTablebaseManager()
         self.contempt = 15          # centipawns de aversão ao empate (jogamos para ganhar)
+        self.our_color: bool | None = None  # nossa cor; None = lado que joga na raiz (UCI)
+        self._draw_root = -15       # valor do empate para quem joga na raiz (ver _prepare_root)
         self._lock = threading.Lock()
         self.resize_tt(tt_bits)
         self.history = [[0] * 4096, [0] * 4096]   # [cor][origem*64 + destino]
@@ -347,8 +348,9 @@ class SearchEngine:
             raise SearchTimeout()
 
     def _draw_score(self, ply: int) -> int:
-        # Contempt: para o lado que estava na vez na raiz (nós), empate vale um pouco menos que 0
-        return -self.contempt if (ply & 1) == 0 else self.contempt
+        # Contempt: empate vale -contempt para NÓS e +contempt para o adversário. Nos plies
+        # pares joga quem estava na vez na raiz; nos ímpares, o outro lado (sinal invertido).
+        return self._draw_root if (ply & 1) == 0 else -self._draw_root
 
     def _is_repetition(self, key: int, halfmove_clock: int) -> bool:
         stack = self.hash_stack
@@ -695,7 +697,7 @@ class SearchEngine:
                 elif wdl < -1:
                     tb_score = -TB_WIN + ply
                 else:
-                    tb_score = DRAW_SCORE
+                    tb_score = self._draw_score(ply)  # empate de tablebase também leva o contempt
                 self._tt_store(key, MAX_PLY, TT_EXACT, tb_score, None, None, ply)
                 return tb_score
 
@@ -897,6 +899,10 @@ class SearchEngine:
         keys.reverse()
         self.hash_stack = keys
         self.root_turn = board.turn
+        # O contempt é contado a partir da NOSSA cor. No ponder sem lance previsto a raiz é a
+        # vez do adversário: sem isto o sinal se inverteria e a TT guardaria empates trocados.
+        us = board.turn if self.our_color is None else self.our_color
+        self._draw_root = -self.contempt if board.turn == us else self.contempt
         self.nodes = 0
         self.seldepth = 0
         self.killers = [[-1, -1] for _ in range(MAX_PLY + 2)]

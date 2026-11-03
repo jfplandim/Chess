@@ -1,1 +1,3 @@
-python-chess>=1.999
+# Tabuleiro e geração de lances legais (FAQ Item 14). Versão fixa: a mesma dos testes e matches.
+# No PyPI o pacote se chama "chess" (antigo "python-chess").
+chess==1.11.2
