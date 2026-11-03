@@ -114,9 +114,14 @@ def parse_clock_input(val_str: str) -> float:
 
 class PonderController:
     """
-    Gerencia o Pondering em background (FAQ Item 13) durante o turno do adversário.
-    Preenche a Tabela de Transposição enquanto aguarda a digitação do lance oponente,
-    interrompendo instantaneamente assim que o operador pressiona Enter.
+    Pondering em background (FAQ Item 13) durante o turno do adversário.
+    Enquanto o operador espera o anúncio do lance adversário, o motor pensa na posição
+    após o lance que ele PREVÊ (2º lance da variante principal), enchendo a Tabela de
+    Transposição. Se o adversário jogar o lance previsto, a busca seguinte começa com
+    a árvore quase pronta e chega muito mais fundo no mesmo tempo.
+
+    Segurança: a busca de ponder e a busca principal NUNCA rodam ao mesmo tempo
+    (stop_ponder() espera a thread terminar; além disso o motor tem um lock interno).
     """
 
     def __init__(self, engine: SearchEngine):
@@ -126,8 +131,6 @@ class PonderController:
 
     def start_ponder(self, board: chess.Board, predicted_uci: str | None = None) -> None:
         self.stop_ponder()
-        self.stop_event.clear()
-
         ponder_board = board.copy()
         if predicted_uci:
             try:
@@ -136,25 +139,23 @@ class PonderController:
                     ponder_board.push(pmove)
             except ValueError:
                 pass
-
         if ponder_board.is_game_over():
             return
 
+        stop_event = threading.Event()
+        self.stop_event = stop_event
+
         def _ponder_worker():
-            # Cria um TimeManager virtual longo apenas para o background (limitado a 90s)
-            ponder_tm = TimeManager(initial_minutes=30.0, increment_seconds=0.0)
-            ponder_tm.soft_limit = 60.0
-            ponder_tm.hard_limit = 90.0
-            ponder_tm.start_time = time.perf_counter()
             try:
                 self.engine.search_best_move(
                     board=ponder_board,
-                    time_manager=ponder_tm,
-                    max_depth=12,
+                    time_manager=TimeManager(initial_minutes=60.0, increment_seconds=0.0),
+                    max_depth=64,
                     use_book=False,
-                    use_tb=False,
-                    stop_event=self.stop_event,
+                    use_tb=True,
+                    stop_event=stop_event,
                     verbose=False,
+                    infinite=True,
                 )
             except Exception:
                 pass
@@ -163,9 +164,9 @@ class PonderController:
         self.thread.start()
 
     def stop_ponder(self) -> None:
-        if self.thread is not None and self.thread.is_alive():
+        if self.thread is not None:
             self.stop_event.set()
-            self.thread.join(timeout=0.5)
+            self.thread.join(timeout=10.0)  # a busca verifica o 'stop' a cada ~1000 nós (< 0,1 s)
         self.thread = None
 
 
@@ -175,6 +176,9 @@ def print_help_menu() -> None:
         "  <lance_uci>          : Registra lance adversário (ex: e2e4, g1f3, e7e8q)\n"
         "  undo / voltar        : Desfaz o último meio-lance (use 'undo 2' para voltar 2 lances)\n"
         "  tempo <nosso> [adv]  : Sincroniza relógio em MM:SS ou segundos (ex: tempo 12:30 11:45)\n"
+        "  operador <segundos>  : Ajusta o tempo gasto pelo operador por lance (ex: operador 2)\n"
+        "  fator <x>            : Multiplica o tempo de pensamento (ex: fator 0.7 economiza relógio)\n"
+        "  contempt <cp>        : Aversão ao empate em centipawns (padrão 15; maior = evita mais empates)\n"
         "  fen <string_fen>     : Atualiza posição do tabuleiro conforme tabuleiro físico\n"
         "  forcar <lance_uci>   : Força a execução de um lance específico\n"
         "  ponder               : Ativa/Desativa o cálculo no turno do adversário (Pondering)\n"
@@ -236,9 +240,21 @@ def run_tournament_cli() -> None:
     ponder_input = input("\nAtivar Pondering (calcular durante turno adversário - FAQ Item 13)? [S/n]: ").strip().lower()
     use_ponder = ponder_input not in ("n", "nao", "não", "no", "0")
 
+    # 4. Custo do operador humano por lance (anunciar + mover peça + apertar relógio + digitar)
+    try:
+        op_in = input("\nSegundos gastos pelo OPERADOR em cada lance nosso (anúncio+tabuleiro+relógio) [4]: ").strip()
+        operator_overhead = max(0.0, float(op_in)) if op_in else 4.0
+    except ValueError:
+        operator_overhead = 4.0
+
     # Inicializa componentes
     board = chess.Board()
-    time_manager = TimeManager(initial_minutes=init_min, increment_seconds=inc_sec)
+    time_manager = TimeManager(
+        initial_minutes=init_min,
+        increment_seconds=inc_sec,
+        move_overhead=0.5,
+        operator_overhead=operator_overhead,
+    )
     engine = SearchEngine()
     logger = MatchLogger(team_color=color_name)
     ponder_ctrl = PonderController(engine)
@@ -247,6 +263,8 @@ def run_tournament_cli() -> None:
     print(f"  Partida Iniciada! Jogando de: {color_name}")
     print(f"  Relógio Configurado         : {init_min:.0f} min + {inc_sec:.0f}s/lance")
     print(f"  Pondering (FAQ Item 13)     : {'ATIVADO' if use_ponder else 'DESATIVADO'}")
+    print(f"  Custo do operador por lance : {operator_overhead:.1f}s (descontado do relógio interno)")
+    print("  DICA: sincronize o relógio a cada ~10 lances com 'tempo MM:SS [MM:SS]'.")
     print(f"  Log Oficial (FAQ Item 9)    : {logger.log_path}")
     print(f"  Espelho Rápido p/ Banca     : {logger.txt_mirror_path}")
     print("  Digite 'ajuda' a qualquer momento para ver os comandos de emergência.")
@@ -303,7 +321,7 @@ def run_tournament_cli() -> None:
                 result = engine.search_best_move(
                     board=board,
                     time_manager=time_manager,
-                    max_depth=20,
+                    max_depth=64,
                     use_book=True,
                     use_tb=True,
                     verbose=True,
@@ -342,7 +360,7 @@ def run_tournament_cli() -> None:
                 print(f"  >>> PASSO 3 (MOVER NO TABULEIRO FÍSICO) :   {move_desc}")
                 print("-" * 78)
                 print(
-                    f"  Profundidade: {result.depth} | Nós: {result.nodes} | "
+                    f"  Profundidade: {result.depth} (seletiva {result.seldepth}) | Nós: {result.nodes} | "
                     f"Avaliação: {eval_formatted} | Tempo: {result.elapsed_sec:.2f}s [{result.source}]"
                 )
                 print(f"  Variante Principal (PV): {pv_formatted}")
@@ -405,6 +423,7 @@ def run_tournament_cli() -> None:
                 for _ in range(min(steps, len(board.move_stack))):
                     m = board.pop()
                     undone.append(m.uci())
+                last_predicted_opp_move = None
                 print(f"\n  [UNDO] Lances desfeitos com sucesso: {', '.join(undone)}")
                 logger.log_event(f"UNDO executado. Lances revertidos: {', '.join(undone)}")
                 continue
@@ -426,11 +445,42 @@ def run_tournament_cli() -> None:
                     print("  [USO] Digite: tempo <nosso_tempo_mm:ss> [tempo_adversario_mm:ss]")
                 continue
 
+            if cmd_lower.startswith("contempt"):
+                parts = cmd_lower.split()
+                try:
+                    engine.contempt = max(-100, min(100, int(parts[1])))
+                    print(f"\n  [CONFIG] Contempt: {engine.contempt} cp")
+                    logger.log_event(f"Contempt ajustado para {engine.contempt} cp")
+                except (IndexError, ValueError):
+                    print("  [USO] Digite: contempt <centipawns>  (ex: contempt 25)")
+                continue
+
+            if cmd_lower.startswith("fator"):
+                parts = cmd_lower.split()
+                try:
+                    time_manager.time_factor = min(3.0, max(0.1, float(parts[1])))
+                    print(f"\n  [CONFIG] Fator de tempo: {time_manager.time_factor:.2f}x")
+                    logger.log_event(f"Fator de tempo ajustado para {time_manager.time_factor:.2f}")
+                except (IndexError, ValueError):
+                    print("  [USO] Digite: fator <x>  (ex: fator 0.7)")
+                continue
+
+            if cmd_lower.startswith("operador"):
+                parts = cmd_lower.split()
+                try:
+                    time_manager.operator_overhead = max(0.0, float(parts[1]))
+                    print(f"\n  [CONFIG] Custo do operador por lance: {time_manager.operator_overhead:.1f}s")
+                    logger.log_event(f"Custo do operador ajustado para {time_manager.operator_overhead:.1f}s")
+                except (IndexError, ValueError):
+                    print("  [USO] Digite: operador <segundos>  (ex: operador 2.5)")
+                continue
+
             if cmd_lower.startswith("fen "):
                 fen_str = raw_cmd[4:].strip()
                 try:
                     new_board = chess.Board(fen_str)
                     board = new_board
+                    last_predicted_opp_move = None
                     print("\n  [TABULEIRO ATUALIZADO VIA FEN COM SUCESSO!]")
                     logger.log_event(f"Posição ajustada via FEN: {fen_str}")
                 except ValueError as e:

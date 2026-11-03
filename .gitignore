@@ -15,3 +15,9 @@ gerar_pdf.py
 
 # Logs de partidas de teste locais
 logs/
+
+# Tablebases Syzygy (baixadas com tools/baixar_syzygy.py, ~1 GB)
+syzygy/
+*.rtbw
+*.rtbz
+*.part
