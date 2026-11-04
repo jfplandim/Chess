@@ -21,3 +21,7 @@ syzygy/
 *.rtbw
 *.rtbz
 *.part
+
+# Tabuleiro do navegador, regravado pelo main.py a cada lance (o tabuleiro.html já cai em *.html)
+tabuleiro.svg
+tabuleiro.svg.tmp
