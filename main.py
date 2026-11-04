@@ -1,5 +1,5 @@
 """
-Interface Principal de Torneio (CLI Blindada + Pondering + Logs)
+Interface Principal de Torneio (CLI Blindada + Pondering + Logs + Tabuleiro no navegador)
 Chess Challenge III - ICEV 2026
 
 Segue rigorosamente o protocolo de 4 passos do FAQ Item 10:
@@ -8,17 +8,66 @@ Segue rigorosamente o protocolo de 4 passos do FAQ Item 10:
 3. Registra automaticamente no arquivo .log e .txt todos os dados exigidos pelo FAQ Item 9.
 4. Possui Pondering em background (FAQ Item 13) e comandos de emergência (undo, tempo, fen)
    para garantir que o software jamais trave ou perca sincronia com o tabuleiro físico.
+
+Visualização: a cada lance o tabuleiro é gravado em tabuleiro.svg e a página tabuleiro.html
+(aberta no navegador) se atualiza sozinha. Mude SO_NAVEGADOR para False para ver também
+o tabuleiro de texto no terminal.
 """
 
+import os
 import sys
 import time
 import threading
+import webbrowser
+
 import chess
+import chess.svg
 
 from evaluation import evaluate_board
 from time_manager import TimeManager
-from search import SearchEngine
+from search import SearchEngine, SearchResult
 from logger import MatchLogger
+
+# ==============================================================================
+# TABULEIRO NO NAVEGADOR (SVG que se atualiza sozinho)
+# ==============================================================================
+_DIR = os.path.dirname(os.path.abspath(__file__))
+SVG_PATH = os.path.join(_DIR, "tabuleiro.svg")
+HTML_PATH = os.path.join(_DIR, "tabuleiro.html")
+SO_NAVEGADOR = True        # True = não desenha no terminal, só no navegador
+ABRIR_NAVEGADOR = True     # abre a página automaticamente ao iniciar a partida
+
+_HTML = """<!doctype html><meta charset="utf-8"><title>Tabuleiro</title>
+<style>body{margin:0;background:#262421;display:flex;justify-content:center;
+align-items:center;height:100vh}img{height:96vmin;width:96vmin;
+box-shadow:0 8px 30px #000a;border-radius:4px}</style>
+<img id="b" src="tabuleiro.svg">
+<script>setInterval(()=>{document.getElementById('b').src='tabuleiro.svg?'+Date.now()},400)</script>"""
+
+
+def salvar_tabuleiro_svg(board: chess.Board, perspective: bool = chess.WHITE,
+                         last_move: chess.Move | None = None) -> None:
+    """Grava o tabuleiro atual em tabuleiro.svg (troca atômica) e cria tabuleiro.html se faltar."""
+    if not os.path.isfile(HTML_PATH):
+        with open(HTML_PATH, "w", encoding="utf-8") as f:
+            f.write(_HTML)
+    svg = chess.svg.board(
+        board,
+        lastmove=last_move,
+        flipped=(perspective == chess.BLACK),
+        check=board.king(board.turn) if board.is_check() else None,
+        size=800,
+        colors={
+            "square light": "#eeeed2", "square dark": "#769656",
+            "square light lastmove": "#f6f669", "square dark lastmove": "#baca2b",
+            "margin": "#262421", "coord": "#ffffff",
+        },
+    )
+    tmp = SVG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(svg)
+    os.replace(tmp, SVG_PATH)  # o navegador nunca lê o arquivo pela metade
+
 
 # Armageddon (FAQ Item 12): o empate classifica as Pretas, então o contempt muda de sinal pela cor
 ARMAGEDDON_CONTEMPT = 100
@@ -37,11 +86,6 @@ PROMO_NAMES_PT = {
     chess.ROOK: "TORRE (r)",
     chess.BISHOP: "BISPO (b)",
     chess.KNIGHT: "CAVALO (n)",
-}
-
-UNICODE_PIECES = {
-    "P": "♙", "N": "♘", "B": "♗", "R": "♖", "Q": "♕", "K": "♔",
-    "p": "♟", "n": "♞", "b": "♝", "r": "♜", "q": "♛", "k": "♚",
 }
 
 
@@ -78,32 +122,48 @@ def print_board_visual(
     perspective: bool = chess.WHITE,
     last_move: chess.Move | None = None,
 ) -> None:
-    """Imprime o tabuleiro formatado no terminal com coordenadas e destaque do último lance."""
-    print("\n    +------------------------+")
+    """Atualiza o tabuleiro no navegador e, se SO_NAVEGADOR=False, também desenha no terminal."""
+    try:
+        salvar_tabuleiro_svg(board, perspective, last_move)
+    except Exception as exc:  # a visualização nunca pode derrubar a partida
+        print(f"  [AVISO] Não foi possível atualizar o tabuleiro SVG: {exc}")
+    if SO_NAVEGADOR:
+        return
+
+    # (topo, base) de cada tipo de casa em cores 256
+    LIGHT = (223, 180)
+    DARK = (108, 65)
+    HL_LIGHT = (229, 186)
+    HL_DARK = (143, 101)
     ranks = range(7, -1, -1) if perspective == chess.WHITE else range(8)
     files = range(8) if perspective == chess.WHITE else range(7, -1, -1)
 
+    print()
     for r in ranks:
-        row_str = f"  {r + 1} | "
+        top_row = f" {r + 1} "
+        bot_row = "   "
         for f in files:
             sq = chess.square(f, r)
+            light = (f + r) % 2 == 1
+            top_bg, bot_bg = LIGHT if light else DARK
+            if last_move and sq in (last_move.from_square, last_move.to_square):
+                top_bg, bot_bg = HL_LIGHT if light else HL_DARK
             piece = board.piece_at(sq)
-            symbol = piece.symbol() if piece else "."
-
-            # Destaca casas de origem/destino do último lance com colchetes
-            if last_move and (sq == last_move.from_square or sq == last_move.to_square):
-                cell = f"[{symbol}]"
+            if piece:
+                letter = piece.symbol().upper()
+                if piece.color == chess.WHITE:
+                    chip = f"\033[48;5;255m\033[38;5;16m\033[1m {letter} \033[0m"
+                else:
+                    chip = f"\033[48;5;16m\033[38;5;255m\033[1m {letter} \033[0m"
+                top_cell = f"\033[48;5;{top_bg}m \033[0m{chip}\033[48;5;{top_bg}m \033[0m"
             else:
-                cell = f" {symbol} "
-            row_str += cell
-        row_str += "|"
-        print(row_str)
-
-    print("    +------------------------+")
-    if perspective == chess.WHITE:
-        print("       a  b  c  d  e  f  g  h\n")
-    else:
-        print("       h  g  f  e  d  c  b  a\n")
+                top_cell = f"\033[48;5;{top_bg}m     \033[0m"
+            top_row += top_cell
+            bot_row += f"\033[48;5;{bot_bg}m     \033[0m"
+        print(top_row)
+        print(bot_row)
+    letters = "abcdefgh" if perspective == chess.WHITE else "hgfedcba"
+    print("   " + "".join(f"  {c}  " for c in letters) + "\n")
 
 
 def parse_clock_input(val_str: str) -> float:
@@ -113,6 +173,52 @@ def parse_clock_input(val_str: str) -> float:
         parts = val_str.split(":")
         return float(parts[0]) * 60.0 + float(parts[1])
     return float(val_str)
+
+
+def partida_acabou(board: chess.Board) -> bool:
+    """
+    Fim de jogo REAL: xeque-mate, afogamento, material insuficiente, tripla repetição já
+    ocorrida ou 100 meios-lances sem captura/peão. (Não usa claim_draw=True, que também
+    acusaria empates que só aconteceriam se um lance futuro fosse jogado.)
+    """
+    return board.is_game_over() or board.is_repetition(3) or board.halfmove_clock >= 100
+
+
+def resultado_partida(board: chess.Board) -> tuple[str, str]:
+    """Retorna (resultado, motivo) de uma partida já encerrada segundo partida_acabou()."""
+    if board.is_game_over():
+        outcome = board.outcome()
+        reason = outcome.termination.name if outcome else "FIM DE JOGO"
+        return board.result(), reason
+    if board.is_repetition(3):
+        return "1/2-1/2", "THREEFOLD_REPETITION"
+    return "1/2-1/2", "FIFTY_MOVES"
+
+
+def lance_de_emergencia(board: chess.Board, time_manager: TimeManager) -> SearchResult:
+    """
+    Se a busca falhar por qualquer motivo, joga o melhor lance em 1 ply pela avaliação
+    estática (ou o primeiro lance legal, se até isso falhar). Nunca deixa o relógio correndo sem lance.
+    """
+    legal = list(board.legal_moves)
+    best_move = legal[0]
+    best_score = 0
+    try:
+        best_val = None
+        for m in legal:
+            board.push(m)
+            try:
+                val = -evaluate_board(board, check_terminal=True)
+            finally:
+                board.pop()
+            if best_val is None or val > best_val:
+                best_val, best_move = val, m
+        best_score = best_val if best_val is not None else 0
+    except Exception:
+        best_move = legal[0]
+        best_score = 0
+    elapsed = time_manager.elapsed()
+    return SearchResult(best_move, best_score, 1, 1, elapsed, [best_move.uci()], "EMERGENCY", 0, [best_move])
 
 
 class PonderController:
@@ -278,8 +384,17 @@ def run_tournament_cli() -> None:
     print("  DICA: sincronize o relógio a cada ~10 lances com 'tempo MM:SS [MM:SS]'.")
     print(f"  Log Oficial (FAQ Item 9)    : {logger.log_path}")
     print(f"  Espelho Rápido p/ Banca     : {logger.txt_mirror_path}")
+    print(f"  Tabuleiro no navegador      : {HTML_PATH}")
     print("  Digite 'ajuda' a qualquer momento para ver os comandos de emergência.")
     print("------------------------------------------------------------------------------")
+
+    # Gera o primeiro SVG e abre a página do tabuleiro (uma vez só)
+    try:
+        salvar_tabuleiro_svg(board, our_color, None)
+        if ABRIR_NAVEGADOR:
+            webbrowser.open("file://" + HTML_PATH)
+    except Exception as exc:
+        print(f"  [AVISO] Não foi possível abrir o tabuleiro no navegador: {exc}")
 
     last_predicted_opp_move: str | None = None
 
@@ -296,12 +411,10 @@ def run_tournament_cli() -> None:
                 f"Nosso Tempo: [{our_clock_str}] | Tempo Adv (est.): [{opp_clock_str}]"
             )
 
-            # Verifica fim de jogo (Xeque-mate, Empate por tripla repetição, 50 lances, etc.)
-            if board.is_game_over(claim_draw=True):
+            # Verifica fim de jogo REAL (mate, afogamento, material, tripla repetição ou 50 lances)
+            if partida_acabou(board):
                 ponder_ctrl.stop_ponder()
-                outcome = board.outcome(claim_draw=True)
-                result_str = board.result(claim_draw=True)
-                reason = outcome.termination.name if outcome else "FIM DE JOGO"
+                result_str, reason = resultado_partida(board)
                 print("\n==============================================================================")
                 print(f"  FIM DA PARTIDA! Resultado: {result_str} ({reason})")
                 print(f"  Arquivo de Log pronto para entrega à banca em:\n  -> {logger.log_path}")
@@ -317,11 +430,11 @@ def run_tournament_cli() -> None:
                     continue
                 break
 
-            # Alerta de Tripla Repetição ou 50 lances (FAQ Item 12)
-            if board.is_repetition(3):
-                print("  [ALERTA ÁRBITRO - FAQ ITEM 12] Tripla repetição detectada! Empate automático.")
-            elif board.halfmove_clock >= 100:
-                print("  [ALERTA ÁRBITRO - FAQ ITEM 12] Regra dos 50 lances atingida! Empate automático.")
+            # Alerta preventivo: o PRÓXIMO lance pode permitir reivindicar empate (FAQ Item 12)
+            if board.can_claim_threefold_repetition():
+                print("  [ALERTA ÁRBITRO - FAQ ITEM 12] Atenção: tripla repetição possível neste lance.")
+            elif board.halfmove_clock >= 96:
+                print(f"  [ALERTA ÁRBITRO - FAQ ITEM 12] Regra dos 50 lances perto: {board.halfmove_clock}/100 meios-lances.")
 
             # ==================================================================
             # TURNO DA NOSSA EQUIPE (MOTOR CALCULA E ESCOLHE O LANCE)
@@ -329,14 +442,19 @@ def run_tournament_cli() -> None:
             if board.turn == our_color:
                 ponder_ctrl.stop_ponder()
                 print("\n  >>> Calculando melhor lance...")
-                result = engine.search_best_move(
-                    board=board,
-                    time_manager=time_manager,
-                    max_depth=64,
-                    use_book=True,
-                    use_tb=True,
-                    verbose=True,
-                )
+                try:
+                    result = engine.search_best_move(
+                        board=board,
+                        time_manager=time_manager,
+                        max_depth=64,
+                        use_book=True,
+                        use_tb=True,
+                        verbose=True,
+                    )
+                except Exception as exc:
+                    print(f"\n  [ERRO NA BUSCA] {exc}\n  >>> Usando LANCE DE EMERGÊNCIA (avaliação em 1 ply).")
+                    logger.log_event(f"Exceção na busca: {exc}. Lance de emergência usado.")
+                    result = lance_de_emergencia(board, time_manager)
 
                 chosen_move = result.best_move
                 uci_str = chosen_move.uci()
