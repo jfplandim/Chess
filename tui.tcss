@@ -1,0 +1,343 @@
+/* Interface de torneio - Chess Challenge III - ICEV 2026
+   Paleta "mesa de torneio": madeira do tabuleiro, latão do relógio, feltro da mesa.
+   As mesmas cores estão no início do tui.py (desenho do tabuleiro e textos). */
+
+$madeira: #211A14;
+$painel: #2B221A;
+$borda: #4A3B2C;
+$marfim: #EFE3CC;
+$grafite: #A8977F;
+$latao: #E8B44C;
+$feltro: #7FB77E;
+$bandeira: #E0583F;
+
+Screen {
+    background: $madeira;
+    color: $marfim;
+}
+
+/* ---------------------------------------------------------------- Tela inicial */
+TelaInicio {
+    align: center middle;
+}
+
+TelaInicio Center {
+    height: auto;
+}
+
+#inicio {
+    width: 104;
+    max-width: 100%;
+    height: auto;
+    padding: 1 3;
+    background: $painel;
+    border: round $borda;
+}
+
+#titulo {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#salvo {
+    height: auto;
+    margin-bottom: 1;
+    padding: 0 0 0 2;
+    background: $madeira;
+    border: round $latao;
+}
+
+#salvo-texto {
+    width: 1fr;
+    padding-top: 1;
+}
+
+#opcoes {
+    height: auto;
+}
+
+.grupo {
+    width: 1fr;
+    height: auto;
+    padding-right: 2;
+}
+
+.rotulo-grupo {
+    color: $grafite;
+    margin-top: 1;
+}
+
+RadioSet {
+    width: 100%;
+    background: $painel;
+    border: none;
+    padding: 0;
+}
+
+RadioSet:focus {
+    border: none;
+}
+
+#personalizado {
+    height: 3;
+}
+
+#personalizado Input {
+    width: 8;
+}
+
+.unidade {
+    padding: 1 1 0 1;
+    color: $grafite;
+}
+
+#operador {
+    width: 12;
+}
+
+#resumo {
+    height: auto;
+    margin-top: 1;
+    padding: 1 2;
+    background: $madeira;
+    border-left: thick $latao;
+}
+
+#ambiente {
+    height: auto;
+    margin-top: 1;
+    color: $grafite;
+}
+
+#comecar {
+    width: 100%;
+    margin-top: 1;
+}
+
+#dica-inicio {
+    margin-top: 1;
+    color: $grafite;
+    text-align: center;
+}
+
+/* ---------------------------------------------------------------- Partida */
+#topo {
+    height: 1;
+    background: $painel;
+}
+
+#topo-esq {
+    width: auto;
+}
+
+#topo-dir {
+    width: 1fr;
+    text-align: right;
+    padding-right: 1;
+}
+
+#corpo {
+    height: 1fr;
+}
+
+#esquerda {
+    height: 100%;
+}
+
+#tabuleiro {
+    margin: 1 2 0 1;
+}
+
+#direita {
+    width: 1fr;
+    height: 100%;
+    padding-right: 1;
+}
+
+#agora {
+    height: auto;
+    min-height: 9;
+    margin-top: 1;
+    padding: 0 2;
+    background: $painel;
+    border: round $latao;
+    border-title-color: $latao;
+    border-title-style: bold;
+}
+
+#relogios {
+    height: 5;
+}
+
+.relogio {
+    width: 1fr;
+    height: 5;
+    background: $painel;
+    border: round $borda;
+    border-title-color: $grafite;
+    align: center middle;
+}
+
+.relogio Digits {
+    width: auto;
+    color: $grafite;
+}
+
+.relogio.ativo {
+    border: round $latao;
+    border-title-color: $latao;
+    border-title-style: bold;
+}
+
+.relogio.ativo Digits {
+    color: $marfim;
+}
+
+.relogio.pouco Digits {
+    color: $bandeira;
+}
+
+#motor {
+    height: 1fr;
+    min-height: 6;
+    padding: 0 1;
+    background: $painel;
+    border: round $borda;
+    border-title-color: $grafite;
+}
+
+#sumula-rolagem {
+    height: 1fr;
+    margin: 1 2 0 1;
+    padding: 0 1;
+    background: $painel;
+    border: round $borda;
+    border-title-color: $grafite;
+    scrollbar-size-vertical: 1;
+}
+
+#barra-entrada {
+    height: 4;
+    padding: 0 1;
+    background: $painel;
+    border-top: solid $borda;
+}
+
+#rotulo-entrada {
+    width: auto;
+    padding: 1 1 0 0;
+    text-style: bold;
+}
+
+#entrada {
+    width: 26;
+    background: $madeira;
+    border: tall $borda;
+}
+
+#entrada:focus {
+    border: tall $feltro;
+}
+
+#entrada.manual:focus {
+    border: tall $latao;
+}
+
+#previa {
+    width: 1fr;
+    height: 3;
+    padding: 1 1 0 2;
+}
+
+Footer {
+    background: $painel;
+}
+
+/* ---------------------------------------------------------------- Diálogos */
+Dialogo, TelaAjuda {
+    align: center middle;
+    background: $madeira 70%;
+}
+
+.dialogo {
+    width: 72;
+    max-width: 95%;
+    height: auto;
+    padding: 1 2;
+    background: $painel;
+    border: round $latao;
+}
+
+.dialogo.largo {
+    width: 88;
+}
+
+.titulo {
+    margin-bottom: 1;
+    color: $latao;
+    text-style: bold;
+}
+
+.texto {
+    margin-bottom: 1;
+}
+
+.destaque {
+    margin-bottom: 1;
+    color: $latao;
+    text-style: bold;
+}
+
+.nota {
+    margin-bottom: 1;
+    color: $grafite;
+}
+
+.erro {
+    height: auto;
+    color: $bandeira;
+}
+
+.campo {
+    height: 3;
+}
+
+.campo .rotulo {
+    width: 30;
+    padding: 1 1 0 0;
+}
+
+.campo Input {
+    width: 14;
+}
+
+#fen {
+    width: 100%;
+}
+
+.botoes {
+    height: auto;
+    margin-top: 1;
+    align-horizontal: right;
+}
+
+.botoes Button {
+    margin-left: 1;
+}
+
+#ajuda {
+    width: 100;
+    max-width: 95%;
+    height: 90%;
+    padding: 1 2;
+    background: $painel;
+    border: round $latao;
+}
+
+#ajuda VerticalScroll {
+    height: 1fr;
+}
+
+#ajuda Markdown {
+    background: $painel;
+}

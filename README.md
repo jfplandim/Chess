@@ -17,7 +17,7 @@ Motor de xadrez em Python para o **III Chess Challenge — ICEV 2026**. A biblio
 | :--- | :--- |
 | Projeto-base | [`jfplandim/Chess`](https://github.com/jfplandim/Chess), commit `ccee6c7` |
 | Autoria própria (Item 2) | Avaliação (`evaluation.py`), busca (`search.py`) e gestão de tempo (`time_manager.py`) |
-| Biblioteca (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; declarada em `requirements.txt` |
+| Bibliotecas (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; `textual` 8.2.8, só para desenhar a interface. Ambas declaradas em `requirements.txt` |
 | Livro (Item 3) | Linhas clássicas de abertura embutidas em `book_and_tb.py`, até 10 meios-lances |
 | Tablebases (Item 4) | Syzygy de até 5 peças, baixadas antes do evento com `tools/baixar_syzygy.py` |
 | Tabelas da avaliação | Valores públicos do PeSTO como ponto de partida (seção 10 do guia da banca) |
@@ -74,8 +74,53 @@ python test_engine.py
 
 ### 4. Partida oficial (100% offline)
 ```bash
-python main.py
+python tui.py          # interface de torneio (recomendada)
+python main.py         # modo texto, se a interface não abrir
 ```
+
+---
+
+## Interface de torneio (`tui.py`)
+
+Feita para a mesa do torneio: o operador não digita comandos, só o lance do adversário.
+
+- **Tela inicial:** cor (tecla B ou P), ritmo (1 a 4: 15+10, Armageddon, 25+0 ou
+  personalizado), pondering e segundos do operador. Enter começa a partida. Se a partida
+  anterior foi interrompida, aparece **Retomar partida**.
+- **Placa "Agora":** diz o que fazer em cada momento. Quando o motor joga, o lance aparece em
+  letras grandes com os passos do FAQ Item 10: anunciar, mover a peça (com a descrição do
+  movimento, inclusive roque e promoção), apertar o relógio e digitar o lance do adversário.
+  Um bipe avisa que o lance saiu.
+- **Lance do adversário:** digite em UCI (`e7e5`) e aperte Enter. Antes do Enter, a linha ao
+  lado diz se o lance é legal e o que ele faz; lance ilegal não é aceito. Também dá para
+  clicar na peça e depois na casa de destino. Promoção sem a peça (`e7e8`) abre a escolha.
+- **Relógios:** os dois correm na tela (o do adversário é estimado) e ficam vermelhos com
+  menos de 1 minuto.
+- **Motor:** profundidade, nós, avaliação com barra, linha principal e o lance esperado no ponder.
+- **Súmula:** todos os lances; os nossos em amarelo, com a origem (livro, tablebase, manual).
+- **Tabuleiro:** do ponto de vista da nossa cor; fichas claras são as Brancas e escuras as
+  Pretas, com letras (R rei, D dama, T torre, B bispo, C cavalo, P peão) ou símbolos.
+
+| Tecla | O que faz |
+| :--- | :--- |
+| Enter | Registra o lance digitado; com o motor pausado, manda o motor pensar |
+| Espaço | Enquanto o motor pensa, joga agora com o melhor lance encontrado |
+| F1 | Ajuda |
+| F2 | Desfaz o último meio-lance (e para o motor, se ele estiver pensando) |
+| F3 | Sincroniza com o relógio físico (MM:SS) |
+| F4 | Ajustes: operador, fator de tempo, contempt, pondering, som e peças |
+| F5 | Corrige a posição por FEN (o tabuleiro físico é a referência) |
+| F6 | Modo economia: metade do tempo por lance (desempate por tempo, FAQ Item 12) |
+| F7 | Avaliação estática da posição |
+| F8 | Liga ou desliga o pondering |
+| F9 | Registra um lance nosso diferente do motor (peça tocada); vai ao log como MANUAL |
+| Ctrl+Q | Encerra: resultado declarado pelo árbitro, ou sair e retomar depois |
+
+O rodapé aceita clique, útil se o terminal capturar alguma tecla F (o GNOME Terminal usa o
+F1). A partida é salva a cada lance em `logs/partida_em_andamento.json`: se o notebook
+travar, rode `python tui.py` de novo e escolha **Retomar partida**; o log continua no mesmo
+arquivo. Maximize o terminal (o ideal é pelo menos 120 × 36). O log da banca tem o mesmo
+formato nos dois modos.
 
 ---
 
@@ -83,7 +128,7 @@ python main.py
 
 1. Notebook **na tomada**, modo de energia **desempenho**, outros programas fechados.
 2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM".
-3. Em `python main.py`, informe:
+3. Abra `python tui.py` (ou o modo texto, `python main.py`) e informe:
    - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; Armageddon = opção 3, que já
      ajusta o contempt sozinho: com Brancas evita o empate, com Pretas busca, pois o empate
      classifica as Pretas — FAQ Item 12);
@@ -92,13 +137,14 @@ python main.py
      relógio + digitar o lance adversário). Meçam no treino! O padrão é 4 s.
      A gestão de tempo desconta esse custo de todos os lances futuros — no Armageddon
      sem incremento isso é o que evita perder por tempo.
-4. A cada ~10 lances, sincronize com o relógio físico: `tempo 11:42 12:05`
-   (nosso tempo e, opcional, o do adversário).
+4. A cada ~10 lances, sincronize com o relógio físico: F3 na interface, ou
+   `tempo 11:42 12:05` no modo texto (nosso tempo e, opcional, o do adversário).
 5. O log exigido pelo FAQ Item 9 é gravado a cada lance em `logs/partida_*.log`
    e espelhado em `logs/ultima_partida_banca.txt`.
-6. Comandos de emergência: `undo`, `fen <FEN>`, `forcar <lance>`, `tempo`, `ponder`,
-   `avaliar`, `log`, `ajuda`.
-7. Ajustes durante a partida (digitados na vez do adversário):
+6. Na interface, desfazer, posição, ajustes e os demais comandos ficam nas teclas F1 a F9
+   (tabela acima). No modo texto, os comandos de emergência são `undo`, `fen <FEN>`,
+   `forcar <lance>`, `tempo`, `ponder`, `avaliar`, `log` e `ajuda`.
+7. Ajustes durante a partida (F4 e F6 na interface; no modo texto, digitados na vez do adversário):
    - `operador 2` — o operador ficou mais rápido/lento (segundos por lance);
    - `fator 0.7` — pensar 30% menos. O desempate da Melhor de 3 é a soma do tempo restante
      nas três partidas (FAQ Item 12): em posição morta, `fator 0.5` guarda relógio e
@@ -115,7 +161,9 @@ python main.py
 | `evaluation.py` | Avaliação: Tapered Eval (PeSTO), mobilidade, segurança do rei, estrutura de peões com cache, peões passados, conhecimento de finais, Mop-Up |
 | `time_manager.py` | Tempo: orçamento por lance com custo do operador, limites soft/hard, extensão por instabilidade e fail-low |
 | `book_and_tb.py` | Livro (trava de 10 meios-lances, FAQ Item 3) e Syzygy (até 5 peças, FAQ Item 4) |
-| `main.py` | Interface do torneio (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |
+| `tui.py`, `tui.tcss` | Interface de torneio (TUI): placa de anúncio, lance adversário validado ao digitar, relógios, súmula e atalhos F1 a F9 |
+| `session.py` | Estado da partida usado pela TUI: a mesma lógica do `main.py` (relógio, log, ponder, contempt) e o salvamento para retomar |
+| `main.py` | Interface em modo texto (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |
 | `logger.py` | Log obrigatório da banca (FAQ Item 9) |
 | `uci.py` | Protocolo UCI (Arena, CuteChess, EnCroissant e `tools/match.py`) |
 | `tools/match.py` | Match automático entre duas versões do motor com Elo e intervalo de confiança |

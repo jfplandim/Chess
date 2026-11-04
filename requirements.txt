@@ -1,3 +1,5 @@
 # Tabuleiro e geração de lances legais (FAQ Item 14). Versão fixa: a mesma dos testes e matches.
 # No PyPI o pacote se chama "chess" (antigo "python-chess").
 chess==1.11.2
+# Interface de torneio (tui.py). Só desenha a tela; não participa da decisão dos lances.
+textual==8.2.8
