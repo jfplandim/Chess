@@ -9,6 +9,10 @@ Motor de xadrez em Python para o **III Chess Challenge — ICEV 2026**. A biblio
 2. **Busca e Seleção de Lances** (`search.py`)
 3. **Gestão Dinâmica de Tempo** (`time_manager.py`)
 
+**Documentação completa:** [`docs/index.html`](docs/index.html). Abra o arquivo no navegador (funciona sem
+internet) ou, com `python web.py` rodando, em `http://127.0.0.1:8765/documentacao`. Tem instalação, uso
+durante a partida, arquitetura, o motor por dentro, conformidade com o FAQ e o guia da arguição.
+
 ---
 
 ## Declaração para o credenciamento (FAQ Item 1)
@@ -74,9 +78,29 @@ python test_engine.py
 
 ### 4. Partida oficial (100% offline)
 ```bash
-python tui.py          # interface de torneio (recomendada)
-python main.py         # modo texto, se a interface não abrir
+python web.py          # interface no navegador (gráfica)
+python tui.py          # a mesma interface no terminal
+python main.py         # modo texto, se nenhuma das duas abrir
 ```
+
+---
+
+## Interface no navegador (`web.py`)
+
+A interface de torneio em versão gráfica: `python web.py` abre `http://127.0.0.1:8765` no
+navegador e o terminal só mostra esse endereço. Tem as mesmas fases, teclas e regras da TUI
+(descrita abaixo), com peças desenhadas, tabuleiro clicável e botões para todos os comandos.
+
+- **Só nesta máquina:** o servidor escuta apenas em `127.0.0.1` e a página não carrega nada da
+  internet (FAQ Item 14). Um código gerado a cada execução impede que outra página do
+  navegador mande comandos para a partida.
+- **A partida mora no `web.py`, não na aba:** fechar ou recarregar a página não perde nada;
+  é só abrir o endereço de novo. O F5 desta página corrige a posição em vez de recarregar.
+- **Para desligar:** Encerrar > Sair e retomar depois, ou Ctrl+C no terminal. A partida fica
+  salva no mesmo arquivo da TUI: uma interface retoma a partida da outra.
+- **Mesmo motor e mesmo log:** a lógica está em `session.py`, compartilhada com a TUI. Com a
+  página aberta, o motor rende cerca de 94% da velocidade sem ela (medido).
+- `python web.py --porta 9000` usa outra porta; `--sem-navegador` não abre o navegador sozinho.
 
 ---
 
@@ -161,6 +185,7 @@ formato nos dois modos.
 | `evaluation.py` | Avaliação: Tapered Eval (PeSTO), mobilidade, segurança do rei, estrutura de peões com cache, peões passados, conhecimento de finais, Mop-Up |
 | `time_manager.py` | Tempo: orçamento por lance com custo do operador, limites soft/hard, extensão por instabilidade e fail-low |
 | `book_and_tb.py` | Livro (trava de 10 meios-lances, FAQ Item 3) e Syzygy (até 5 peças, FAQ Item 4) |
+| `web.py`, `web/` | Interface no navegador: servidor local (biblioteca padrão) e página com tabuleiro clicável, placa de anúncio, relógios, súmula e os comandos da TUI |
 | `tui.py`, `tui.tcss` | Interface de torneio (TUI): placa de anúncio, lance adversário validado ao digitar, relógios, súmula e atalhos F1 a F9 |
 | `session.py` | Estado da partida usado pela TUI: a mesma lógica do `main.py` (relógio, log, ponder, contempt) e o salvamento para retomar |
 | `main.py` | Interface em modo texto (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |

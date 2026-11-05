@@ -732,6 +732,8 @@ No tabuleiro, fichas claras são as Brancas e fichas escuras são as Pretas. As 
 Na súmula, os lances nossos aparecem em amarelo; *livro* indica lance do livro de aberturas, *tb* de tablebase e *manual* lance registrado pela equipe.
 
 O log oficial da banca (FAQ item 9) é gravado a cada lance na pasta `logs/`.
+
+A documentação completa do projeto está em `docs/index.html` (abra no navegador, funciona sem internet).
 """
 
 
