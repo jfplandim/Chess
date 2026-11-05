@@ -27,6 +27,7 @@ from evaluation import evaluate_board
 from time_manager import TimeManager
 from search import SearchEngine, SearchResult
 from logger import MatchLogger
+from motor_stockfish import MotorIndisponivel, criar_motor, descrever_motor, verificar_stockfish
 
 # ==============================================================================
 # TABULEIRO NO NAVEGADOR (SVG que se atualiza sozinho)
@@ -306,8 +307,9 @@ def run_tournament_cli() -> None:
             pass
     print("==============================================================================")
     print("              CHESS CHALLENGE III - ICEV 2026 - MOTOR OFICIAL                 ")
-    print("        Negamax Alpha-Beta + PVS + TT + PeSTO Tapered Eval + Book/TB          ")
+    print("      Stockfish + gestão de tempo da equipe | reserva: motor próprio (Python) ")
     print("==============================================================================")
+    stockfish = verificar_stockfish()  # sem Stockfish, oferece instalar; senão segue com o motor próprio
 
     # 1. Seleção da Cor da Equipe
     our_color = chess.WHITE
@@ -356,6 +358,15 @@ def run_tournament_cli() -> None:
     except ValueError:
         operator_overhead = 4.0
 
+    # 5. Motor: Stockfish com a nossa gestão de tempo (torneio) ou o motor próprio (reserva)
+    motor, desempenho = "proprio", "ultra"
+    if stockfish:
+        escolha = input("\nMotor: [1] Stockfish com a nossa gestão de tempo (padrão) | [2] Próprio, reserva: ").strip()
+        motor = "proprio" if escolha == "2" else "stockfish"
+    if motor == "stockfish":
+        escolha = input("\nDesempenho do Stockfish: [1] Ultra, força total (padrão) | [2] Médio | [3] Baixo: ").strip()
+        desempenho = {"2": "medio", "3": "baixo"}.get(escolha, "ultra")
+
     # Inicializa componentes
     board = chess.Board()
     time_manager = TimeManager(
@@ -364,11 +375,17 @@ def run_tournament_cli() -> None:
         move_overhead=0.5,
         operator_overhead=operator_overhead,
     )
-    engine = SearchEngine()
+    try:
+        engine = criar_motor(motor, desempenho)
+    except MotorIndisponivel as erro:
+        print(f"\n  {erro}\n  Seguindo com o motor próprio.")
+        engine = criar_motor("proprio")
+    usa_stockfish = not isinstance(engine, SearchEngine)
     engine.our_color = our_color  # contempt contado a partir da nossa cor, inclusive no ponder
     logger = MatchLogger(team_color=color_name)
+    logger.log_event(f"Motor: {descrever_motor(engine)}")
     ponder_ctrl = PonderController(engine)
-    if tc_choice == "3":
+    if tc_choice == "3" and not usa_stockfish:  # o Stockfish não tem contempt
         # Armageddon (FAQ Item 12): empate classifica as Pretas. Com Brancas o empate é derrota
         # (evitar); com Pretas vale a classificação (buscar repetição e finais empatados).
         engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
@@ -379,8 +396,13 @@ def run_tournament_cli() -> None:
     print(f"  Relógio Configurado         : {init_min:.0f} min + {inc_sec:.0f}s/lance")
     print(f"  Pondering (FAQ Item 13)     : {'ATIVADO' if use_ponder else 'DESATIVADO'}")
     print(f"  Custo do operador por lance : {operator_overhead:.1f}s (descontado do relógio interno)")
-    print(f"  {'Contempt (empate)':<28}: {engine.contempt:+d} cp"
-          + ("  (Armageddon: empate classifica as Pretas)" if tc_choice == "3" else ""))
+    print(f"  {'Motor':<28}: {descrever_motor(engine)}")
+    if usa_stockfish:
+        if tc_choice == "3":
+            print(f"  {'Armageddon':<28}: empate classifica as Pretas; o Stockfish avalia o empate como 0")
+    else:
+        print(f"  {'Contempt (empate)':<28}: {engine.contempt:+d} cp"
+              + ("  (Armageddon: empate classifica as Pretas)" if tc_choice == "3" else ""))
     print("  DICA: sincronize o relógio a cada ~10 lances com 'tempo MM:SS [MM:SS]'.")
     print(f"  Log Oficial (FAQ Item 9)    : {logger.log_path}")
     print(f"  Espelho Rápido p/ Banca     : {logger.txt_mirror_path}")

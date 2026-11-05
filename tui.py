@@ -32,6 +32,14 @@ from textual.widgets import Button, Digits, Footer, Input, Label, Markdown, Radi
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
 from main import parse_clock_input
+from motor_stockfish import (
+    NOME_DESEMPENHO,
+    MotorIndisponivel,
+    encontrar_stockfish,
+    fmt_threads,
+    recursos_do_nivel,
+    verificar_stockfish,
+)
 from session import (
     COR_PT,
     Config,
@@ -495,9 +503,10 @@ class DialogoAjustes(Dialogo):
                 yield Input(fmt_num(tm.time_factor), id="fator", max_length=5)
             yield Static("1 é o normal. 0,5 pensa metade do tempo; 1,3 pensa mais.", classes="nota")
             with Horizontal(classes="campo"):
-                yield Label("Contempt (cp)", classes="rotulo")
+                yield Label("Contempt (cp, só motor próprio)", classes="rotulo")
                 yield Input(str(motor.contempt), id="contempt", max_length=4)
-            yield Static("Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado.", classes="nota")
+            yield Static("Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado. "
+                         "Não vale para o Stockfish.", classes="nota")
             with Horizontal(classes="campo"):
                 yield Label("Pondering", classes="rotulo")
                 yield Switch(self.sessao.use_ponder, id="ponder")
@@ -722,7 +731,8 @@ O rodapé também aceita clique. Se o terminal capturar alguma tecla F (como F1 
 - **Digitei errado o lance do adversário:** F2 desfaz e o motor para. Digite o lance certo.
 - **O tabuleiro físico ficou diferente:** F5 e o FEN da posição real.
 - **Desempate da melhor de 3 (FAQ item 12):** vale o tempo restante somado nas três partidas. Em posição morta, F6 economiza relógio.
-- **Armageddon:** o contempt já vem ajustado. Com Brancas o motor evita o empate; com Pretas, procura.
+- **Armageddon:** com o motor próprio, o contempt já vem ajustado (com Brancas evita o empate; com Pretas, procura). O Stockfish não tem contempt: avalia o empate como 0.
+- **Motor:** o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair, reabre sozinho no lance seguinte.
 - **O notebook travou ou a janela fechou:** rode `python tui.py` de novo e escolha **Retomar partida**. Depois confira os relógios.
 - **A busca falhou:** a interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log. F2 desfaz se a equipe preferir outro lance.
 - **A interface não abre:** o modo texto continua em `python main.py`.
@@ -762,11 +772,14 @@ class TelaInicio(Screen):
         Binding("3", "ritmo('edital')", show=False),
         Binding("4", "ritmo('personalizado')", show=False),
         Binding("o", "alternar_ponder", show=False),
+        Binding("m", "alternar_motor", show=False),
+        Binding("d", "alternar_desempenho", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self.salvo = ler_partida_salva()
+        self.stockfish = encontrar_stockfish()
 
     def compose(self) -> ComposeResult:
         with Center():
@@ -782,6 +795,11 @@ class TelaInicio(Screen):
                         with RadioSet(id="cor"):
                             yield RadioButton("Brancas", value=True, id="cor-w")
                             yield RadioButton("Pretas", id="cor-b")
+                        yield Label("Motor (M)", classes="rotulo-grupo")
+                        with RadioSet(id="escolha-motor"):
+                            yield RadioButton("Stockfish", value=bool(self.stockfish), id="m-stockfish",
+                                              disabled=not self.stockfish)
+                            yield RadioButton("Próprio, reserva", value=not self.stockfish, id="m-proprio")
                     with Vertical(classes="grupo"):
                         yield Label("Ritmo (1 a 4)", classes="rotulo-grupo")
                         with RadioSet(id="ritmo"):
@@ -799,6 +817,11 @@ class TelaInicio(Screen):
                         yield Switch(True, id="ponder")
                         yield Label("Operador, segundos por lance", classes="rotulo-grupo")
                         yield Input("4", id="operador", max_length=4)
+                        yield Label("Desempenho do Stockfish (D)", classes="rotulo-grupo")
+                        with RadioSet(id="escolha-desempenho"):
+                            yield RadioButton("Ultra, força total", value=True, id="d-ultra")
+                            yield RadioButton("Médio", id="d-medio")
+                            yield RadioButton("Baixo", id="d-baixo")
                 yield Static(id="resumo")
                 yield Static(id="ambiente")
                 yield Button("Começar partida", id="comecar", variant="primary")
@@ -821,6 +844,8 @@ class TelaInicio(Screen):
             ambiente = f"Tablebases Syzygy prontas, até {pecas} peças. {livro}"
         else:
             ambiente = f"Tablebases Syzygy não encontradas: o motor joga normalmente sem elas. {livro}"
+        if not self.stockfish:
+            ambiente += "\nStockfish não encontrado: só o motor próprio. Instale com python tools/baixar_stockfish.py"
         self.query_one("#ambiente", Static).update(ambiente)
         self._atualizar()
 
@@ -854,7 +879,13 @@ class TelaInicio(Screen):
             incremento=incremento,
             ponder=self.query_one("#ponder", Switch).value,
             operador=operador,
+            motor="proprio" if self.query_one("#m-proprio", RadioButton).value else "stockfish",
+            desempenho=self._desempenho(),
         )
+
+    def _desempenho(self) -> str:
+        botao = self.query_one("#escolha-desempenho", RadioSet).pressed_button
+        return botao.id[2:] if botao is not None and botao.id else "ultra"
 
     def _atualizar(self) -> None:
         self.query_one("#personalizado").display = self._ritmo() == "personalizado"
@@ -868,12 +899,24 @@ class TelaInicio(Screen):
         t = Text()
         if config.ritmo == "armageddon":
             t.append(f"Jogamos de {cor}, Armageddon com {minutos:g} minutos e sem incremento.\n", style=MARFIM)
-            if config.our_color == chess.BLACK:
+            if config.motor == "stockfish":
+                t.append("O empate classifica as Pretas. O Stockfish não tem contempt: avalia o empate como 0.",
+                         style=LATAO)
+            elif config.our_color == chess.BLACK:
                 t.append("O empate classifica as Pretas: o motor vai procurar o empate (contempt −100).", style=LATAO)
             else:
                 t.append("O empate classifica as Pretas: o motor vai evitar o empate (contempt +100).", style=LATAO)
         else:
             t.append(f"Jogamos de {cor}, {minutos:g} minutos e {inc:g} segundos de incremento por lance.", style=MARFIM)
+        self.query_one("#escolha-desempenho", RadioSet).disabled = config.motor != "stockfish"
+        if config.motor == "stockfish":
+            threads, tabela = recursos_do_nivel(config.desempenho)
+            total = " (força total)" if config.desempenho == "ultra" else ""
+            t.append("\nMotor: Stockfish na busca e na avaliação, com a nossa gestão de tempo. "
+                     f"Desempenho {NOME_DESEMPENHO[config.desempenho]}{total}: {fmt_threads(threads)} e {tabela} MB.",
+                     style=MARFIM)
+        else:
+            t.append("\nMotor: o próprio da equipe (reserva), que usa um processador só.", style=MARFIM)
         t.append(
             f"\nPondering {'ligado' if config.ponder else 'desligado'}. "
             f"Operador: {fmt_num(config.operador)} s por lance.",
@@ -897,6 +940,21 @@ class TelaInicio(Screen):
         chave = self.query_one("#ponder", Switch)
         chave.value = not chave.value
 
+    def action_alternar_motor(self) -> None:
+        if not self.stockfish:
+            self.app.notify("Stockfish não encontrado: instale com python tools/baixar_stockfish.py", severity="warning")
+            return
+        proprio = self.query_one("#m-proprio", RadioButton)
+        alvo = "#m-stockfish" if proprio.value else "#m-proprio"
+        self.query_one(alvo, RadioButton).value = True
+
+    def action_alternar_desempenho(self) -> None:
+        if self.query_one("#m-proprio", RadioButton).value:
+            self.app.notify("O desempenho vale para o Stockfish; o motor próprio usa um processador só.")
+            return
+        seguinte = {"ultra": "medio", "medio": "baixo", "baixo": "ultra"}[self._desempenho()]
+        self.query_one(f"#d-{seguinte}", RadioButton).value = True
+
     @on(Button.Pressed, "#comecar")
     @on(Input.Submitted)
     def _comecar(self, event) -> None:
@@ -904,9 +962,14 @@ class TelaInicio(Screen):
         if isinstance(config, str):
             self.app.notify(config, severity="error")
             return
+        try:
+            sessao = GameSession(config)
+        except MotorIndisponivel as erro:
+            self.app.notify(f"{erro} Escolha o motor próprio (M) para jogar com ele.", severity="error", timeout=10)
+            return
         if self.salvo:
             arquivar_partida_salva()
-        self.app.switch_screen(TelaPartida(GameSession(config)))
+        self.app.switch_screen(TelaPartida(sessao))
 
     @on(Button.Pressed, "#retomar")
     def _retomar(self, event: Button.Pressed) -> None:
@@ -1460,8 +1523,9 @@ class TelaPartida(Screen):
             direita.append("Economia ligada    ", style=f"bold {LATAO}")
         if not s.use_ponder:
             direita.append("Ponder desligado    ", style=GRAFITE)
-        if s.engine.contempt != 15:
+        if not s.usa_stockfish and s.engine.contempt != 15:
             direita.append(f"Contempt {s.engine.contempt:+d}    ", style=GRAFITE)
+        direita.append(f"{s.nome_motor}    ", style=LATAO if s.usa_stockfish else GRAFITE)
         direita.append(f"Jogamos de {s.nome_cor}    ", style=MARFIM)
         direita.append(f"Ritmo {s.config.descricao_ritmo()}    ", style=MARFIM)
         direita.append(f"Lance {s.board.fullmove_number}", style=f"bold {MARFIM}")
@@ -1647,4 +1711,5 @@ class TorneioApp(App):
 
 
 if __name__ == "__main__":
+    verificar_stockfish()  # sem Stockfish, oferece instalar antes de desenhar a tela
     TorneioApp().run()

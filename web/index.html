@@ -33,6 +33,9 @@
         <legend>Nossa cor <kbd>B</kbd> <kbd>P</kbd></legend>
         <label class="opcao"><input type="radio" name="cor" value="w" checked> Brancas</label>
         <label class="opcao"><input type="radio" name="cor" value="b"> Pretas</label>
+        <p class="legenda-grupo">Motor <kbd>M</kbd></p>
+        <label class="opcao"><input type="radio" name="motor" value="stockfish" checked> Stockfish</label>
+        <label class="opcao"><input type="radio" name="motor" value="proprio"> Próprio, reserva</label>
       </fieldset>
       <fieldset>
         <legend>Ritmo <kbd>1</kbd> a <kbd>4</kbd></legend>
@@ -51,6 +54,10 @@
         <label class="campo-inicio">Operador, segundos por lance
           <input id="operador" value="4" inputmode="decimal">
         </label>
+        <p class="legenda-grupo">Desempenho do Stockfish <kbd>D</kbd></p>
+        <label class="opcao"><input type="radio" name="desempenho" value="ultra" checked> Ultra, força total</label>
+        <label class="opcao"><input type="radio" name="desempenho" value="medio"> Médio</label>
+        <label class="opcao"><input type="radio" name="desempenho" value="baixo"> Baixo</label>
       </fieldset>
     </div>
 
@@ -145,8 +152,8 @@
     <p class="nota">Tempo para anunciar, mover a peça e apertar o relógio. Meçam no treino.</p>
     <label class="campo"><span>Fator de tempo</span><input id="aj-fator" inputmode="decimal"></label>
     <p class="nota">1 é o normal. 0,5 pensa metade do tempo; 1,3 pensa mais.</p>
-    <label class="campo"><span>Contempt (cp)</span><input id="aj-contempt" inputmode="numeric"></label>
-    <p class="nota">Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado.</p>
+    <label class="campo"><span>Contempt (cp, só motor próprio)</span><input id="aj-contempt" inputmode="numeric"></label>
+    <p class="nota">Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado. Não vale para o Stockfish.</p>
     <label class="opcao"><input type="checkbox" id="aj-ponder"> Pondering</label>
     <label class="opcao"><input type="checkbox" id="aj-som"> Som quando o motor joga</label>
     <p class="erro-dlg" id="ajustes-erro"></p>
@@ -262,7 +269,8 @@
         <li><b>Digitei errado o lance do adversário:</b> Desfazer (F2); o motor para. Digite o lance certo.</li>
         <li><b>O tabuleiro físico ficou diferente:</b> Posição (F5) e o FEN da posição real.</li>
         <li><b>Desempate da melhor de 3 (FAQ item 12):</b> vale o tempo restante somado nas três partidas. Em posição morta, Economia (F6) guarda relógio.</li>
-        <li><b>Armageddon:</b> o contempt já vem ajustado. Com Brancas o motor evita o empate; com Pretas, procura.</li>
+        <li><b>Armageddon:</b> com o motor próprio, o contempt já vem ajustado (com Brancas evita o empate; com Pretas, procura). O Stockfish não tem contempt: avalia o empate como 0.</li>
+        <li><b>Motor:</b> o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair, reabre sozinho no lance seguinte.</li>
         <li><b>A busca falhou:</b> entra um lance de emergência (avaliação em 1 lance), com aviso na tela e no log.</li>
         <li><b>A página fechou ou travou:</b> abra o endereço de novo; a partida continua no web.py. Se o web.py fechou, rode-o de novo e escolha <b>Retomar partida</b>.</li>
       </ul>

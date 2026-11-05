@@ -7,7 +7,11 @@ script de testes tools/match.py. A busca roda em uma thread separada, então os
 comandos 'stop', 'isready', 'ponderhit' e 'quit' são atendidos a qualquer momento.
 
 Opções UCI:
-  Hash (MB), Move Overhead (ms), OwnBook, Ponder, Contempt, SyzygyPath, Log
+  Motor (Proprio ou Stockfish), Desempenho (Baixo, Medio ou Ultra; só Stockfish), Threads (só Stockfish,
+  vale por cima do desempenho), Hash (MB), Move Overhead (ms), OwnBook,
+  Ponder, Contempt (só motor próprio), SyzygyPath, Log
+Com Motor=Stockfish, o Stockfish faz a busca e a avaliação e a nossa gestão de tempo decide quanto
+pensar e quando parar (motor_stockfish.py).
 """
 
 import os
@@ -19,6 +23,7 @@ import chess
 from time_manager import TimeManager
 from search import SearchEngine, MATE_SCORE, MATE_THRESHOLD
 from logger import MatchLogger
+from motor_stockfish import NIVEIS_DESEMPENHO, MotorIndisponivel, MotorStockfish, criar_motor, threads_padrao
 
 ENGINE_NAME = "ICEV_Chess_Engine_2026"
 ENGINE_AUTHOR = "Equipe ICEV 2026"
@@ -49,6 +54,11 @@ class UCIEngine:
         self.stop_event = threading.Event()
         self.ponder_event = threading.Event()  # setado enquanto estamos em "go ponder"
         self.pending_tm: TimeManager | None = None
+        self.hash_mb: int | None = None  # None = padrão de cada motor (o do Stockfish depende da RAM)
+        self.desempenho = "ultra"  # Stockfish: ultra (força total), medio ou baixo
+        self.threads: int | None = None  # só para o Stockfish; None = todos os núcleos
+        self.ponder_go: list[str] | None = None  # o "go ponder" em andamento, sem a palavra "ponder"
+        self.silenciar = threading.Event()  # cala a busca de ponder quando ela vira busca normal
 
     # ------------------------------------------------------------------
     def _get_logger(self) -> MatchLogger | None:
@@ -69,6 +79,38 @@ class UCIEngine:
         self.wait_search()
 
     # ------------------------------------------------------------------
+    def _novo_motor(self, nome: str):
+        """Troca entre o motor próprio e o Stockfish (com a nossa gestão de tempo)."""
+        if nome == "stockfish":
+            try:
+                motor = criar_motor("stockfish", self.desempenho)
+            except MotorIndisponivel as erro:
+                _send(f"info string {erro} Continuo com o motor próprio.")
+                return self.engine
+        else:
+            motor = SearchEngine()
+        self.engine = motor
+        self._aplicar_recursos()
+        return motor
+
+    def _aplicar_recursos(self) -> None:
+        """Stockfish: nível de desempenho, com Threads e Hash pedidos pela GUI valendo por cima."""
+        if isinstance(self.engine, MotorStockfish):
+            self.engine.definir_desempenho(self.desempenho)
+            self.engine.ajustar_recursos(self.threads or self.engine.threads, self.hash_mb or self.engine.hash_mb)
+        else:
+            self._aplicar_hash()
+
+    def _aplicar_hash(self) -> None:
+        if self.hash_mb is None:
+            return  # a GUI não pediu tamanho: fica o padrão do motor
+        if isinstance(self.engine, MotorStockfish):
+            self.engine.resize_tt(self.hash_mb)
+        else:
+            # ~190 bytes por entrada na TT em Python
+            bits = max(14, min(24, (self.hash_mb * 1024 * 1024 // 190).bit_length() - 1))
+            self.engine.resize_tt(bits)
+
     def cmd_setoption(self, tokens: list[str]) -> None:
         # setoption name <id> [value <x>]
         if "name" not in tokens:
@@ -78,11 +120,20 @@ class UCIEngine:
         name = " ".join(tokens[ni + 1:vi]).strip().lower()
         value = " ".join(tokens[vi + 1:]).strip()
         try:
-            if name == "hash":
-                mb = max(1, int(value))
-                # ~190 bytes por entrada na TT em Python
-                bits = max(14, min(24, (mb * 1024 * 1024 // 190).bit_length() - 1))
-                self.engine.resize_tt(bits)
+            if name == "motor":
+                self.stop_search()
+                self.engine = self._novo_motor(value.strip().lower())
+            elif name == "desempenho":
+                nivel = value.strip().lower().replace("é", "e")
+                if nivel in NIVEIS_DESEMPENHO:
+                    self.desempenho = nivel
+                    self._aplicar_recursos()
+            elif name == "threads":
+                self.threads = max(1, int(value))
+                self._aplicar_recursos()
+            elif name == "hash":
+                self.hash_mb = max(1, int(value))
+                self._aplicar_recursos()
             elif name == "move overhead":
                 self.move_overhead_ms = max(0, int(value))
             elif name == "ownbook":
@@ -151,6 +202,9 @@ class UCIEngine:
 
         self.stop_event = threading.Event()
         stop_event = self.stop_event
+        self.silenciar = threading.Event()
+        silenciar = self.silenciar
+        self.ponder_go = [t for t in tokens if t != "ponder"] if ponder else None
         if ponder:
             self.ponder_event.set()
         else:
@@ -189,10 +243,13 @@ class UCIEngine:
             # Em modo ponder/infinite, o protocolo exige esperar o 'stop' antes do bestmove
             while (infinite or ponder) and not stop_event.is_set():
                 stop_event.wait(0.01)
+            if silenciar.is_set():
+                return  # ponderhit: quem responde é a busca normal que substituiu esta
             if res.source != "SEARCH":
                 _send(f"info depth {res.depth} score {_uci_score(res.score_cp)} nodes {res.nodes} "
                       f"time {int(res.elapsed_sec * 1000)} pv {' '.join(res.pv)} string {res.source}")
-            logger = self._get_logger()
+            # Lance de ponder nunca é jogado: no 'stop' a GUI descarta e no 'ponderhit' vem a busca normal
+            logger = None if ponder else self._get_logger()
             if logger is not None:
                 logger.log_engine_move(
                     move_number=board.fullmove_number, turn_color=board.turn,
@@ -222,6 +279,9 @@ class UCIEngine:
             if cmd == "uci":
                 _send(f"id name {ENGINE_NAME}")
                 _send(f"id author {ENGINE_AUTHOR}")
+                _send("option name Motor type combo default Proprio var Proprio var Stockfish")
+                _send("option name Desempenho type combo default Ultra var Baixo var Medio var Ultra")
+                _send(f"option name Threads type spin default {threads_padrao()} min 1 max 512")
                 _send("option name Hash type spin default 190 min 4 max 4096")
                 _send("option name Move Overhead type spin default 100 min 0 max 10000")
                 _send("option name OwnBook type check default true")
@@ -247,12 +307,20 @@ class UCIEngine:
             elif cmd == "stop":
                 self.stop_search()
             elif cmd == "ponderhit":
-                # O adversário jogou o lance previsto: a busca de ponder vira busca normal.
-                # (Simplificação segura: encerra o ponder e devolve o melhor lance encontrado.)
-                self.stop_search()
+                # O adversário jogou o lance previsto. Como no torneio (session.py): o ponder para,
+                # deixando a tabela de transposição pronta, e o motor faz a busca normal do lance
+                # com os tempos do "go ponder". Parar e responder na hora deixava o lance com quase
+                # nenhuma busca quando o adversário respondia rápido.
+                if self.ponder_go is not None:
+                    self.silenciar.set()
+                    self.cmd_go(self.ponder_go)  # o cmd_go para a busca de ponder antes de começar
+                else:
+                    self.stop_search()
             elif cmd == "quit":
                 self.stop_search()
                 break
+        if isinstance(self.engine, MotorStockfish):
+            self.engine.fechar()  # sai na hora, sem esperar o encerramento do Python
 
 
 def run_uci_loop() -> None:

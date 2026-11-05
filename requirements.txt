@@ -3,3 +3,6 @@
 chess==1.11.2
 # Interface de torneio (tui.py). Só desenha a tela; não participa da decisão dos lances.
 textual==8.2.8
+# Programa externo (não é pacote pip): Stockfish 19, versão oficial sf_19, licença GPLv3.
+# Faz a busca e a avaliação do motor do torneio; a gestão de tempo é da equipe (FAQ itens 1, 2 e 14).
+# Instale antes do evento com: python tools/baixar_stockfish.py

@@ -36,6 +36,14 @@ import chess.svg
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
 from main import parse_clock_input
+from motor_stockfish import (
+    NIVEIS_DESEMPENHO,
+    MotorIndisponivel,
+    encontrar_stockfish,
+    motor_padrao,
+    recursos_do_nivel,
+    verificar_stockfish,
+)
 from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -141,6 +149,7 @@ class Controlador:
             self.tablebases = BookAndTablebaseManager().max_pieces()
         except Exception:  # noqa: BLE001 - só informativo
             self.tablebases = 0
+        self.stockfish = encontrar_stockfish()
 
     # ------------------------------------------------------------------
     # Utilidades
@@ -262,7 +271,10 @@ class Controlador:
                 self.sessao.parar()
             if ler_partida_salva():
                 arquivar_partida_salva()
-        sessao = GameSession(config)
+        try:
+            sessao = GameSession(config)
+        except MotorIndisponivel as erro:
+            raise ErroOperador(f"{erro} Escolha o motor próprio para jogar com ele.") from None
         with self.trava:
             self.sessao = sessao
             self.ultimo_nosso = None
@@ -285,10 +297,16 @@ class Controlador:
             raise ErroOperador("O tempo do operador deve ficar entre 0 e 30 segundos.")
         if ritmo == "personalizado" and not (0.5 <= minutos <= 180 and 0 <= incremento <= 60):
             raise ErroOperador("Ritmo personalizado: de 0,5 a 180 minutos e até 60 segundos de incremento.")
+        motor = dados.get("motor") or motor_padrao()
+        if motor not in ("stockfish", "proprio"):
+            raise ErroOperador("Motor desconhecido.")
+        desempenho = dados.get("desempenho") or "ultra"
+        if desempenho not in NIVEIS_DESEMPENHO:
+            raise ErroOperador("Desempenho desconhecido: use Baixo, Médio ou Ultra.")
         return Config(
             our_color=chess.BLACK if dados.get("cor") == "b" else chess.WHITE,
             ritmo=ritmo, minutos=minutos, incremento=incremento,
-            ponder=bool(dados.get("ponder", True)), operador=operador,
+            ponder=bool(dados.get("ponder", True)), operador=operador, motor=motor, desempenho=desempenho,
         )
 
     def retomar(self, dados: dict) -> dict:
@@ -547,7 +565,9 @@ class Controlador:
                 "mensagens": self.mensagens[-8:], "pedir_relogio": self.pedir_relogio,
             }
             if self.sessao is None:
-                e["inicio"] = {"salvo": self._resumo_salvo(), "tablebases": self.tablebases}
+                e["inicio"] = {"salvo": self._resumo_salvo(), "tablebases": self.tablebases,
+                               "stockfish": bool(self.stockfish),
+                               "recursos": {nivel: list(recursos_do_nivel(nivel)) for nivel in NIVEIS_DESEMPENHO}}
                 return e
             s = self.sessao
             board = s.board
@@ -560,6 +580,8 @@ class Controlador:
                 "nome_cor": s.nome_cor,
                 "cor_adv": COR_PT[not s.our_color],
                 "ritmo": s.config.descricao_ritmo(),
+                "nome_motor": s.nome_motor,
+                "stockfish": s.usa_stockfish,
                 "lance_num": board.fullmove_number,
                 "vez": "w" if board.turn == chess.WHITE else "b",
                 "fen": board.fen(),
@@ -715,6 +737,7 @@ def main() -> None:
     parser.add_argument("--sem-navegador", action="store_true", help="não abre o navegador sozinho")
     args = parser.parse_args()
 
+    verificar_stockfish()  # sem Stockfish, oferece instalar antes de abrir a página
     controlador = Controlador()
     Manipulador.controlador = controlador
     Manipulador.token = secrets.token_hex(16)

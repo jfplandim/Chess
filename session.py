@@ -32,7 +32,15 @@ from main import (
     partida_acabou,
     resultado_partida,
 )
-from search import SearchEngine, SearchResult
+from motor_stockfish import (
+    NOME_DESEMPENHO,
+    NOME_MOTOR,
+    MotorStockfish,
+    criar_motor,
+    descrever_motor,
+    motor_padrao,
+)
+from search import SearchResult
 from time_manager import TimeManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +91,8 @@ class Config:
     incremento: float = 10.0
     ponder: bool = True
     operador: float = 4.0           # segundos que a equipe gasta por lance (anunciar, mover, relógio)
+    motor: str = field(default_factory=motor_padrao)  # "stockfish" (torneio) ou "proprio" (reserva)
+    desempenho: str = "ultra"       # Stockfish: "ultra" (força total), "medio" ou "baixo"
 
     def relogio(self) -> tuple[float, float]:
         """Minutos e incremento efetivos (Armageddon: 5 min Brancas, 4 min Pretas, sem incremento)."""
@@ -297,10 +307,10 @@ class GameSession:
             move_overhead=0.5,
             operator_overhead=config.operador,
         )
-        self.engine = SearchEngine()
+        self.engine = criar_motor(config.motor, config.desempenho)  # MotorIndisponivel se o Stockfish não abrir
         self.engine.our_color = config.our_color  # contempt contado a partir da nossa cor
-        if config.ritmo == "armageddon":
-            # FAQ Item 12: empate classifica as Pretas (mesma regra do main.py)
+        if config.ritmo == "armageddon" and not self.usa_stockfish:
+            # FAQ Item 12: empate classifica as Pretas (mesma regra do main.py). O Stockfish não tem contempt.
             self.engine.contempt = ARMAGEDDON_CONTEMPT if config.our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
         self.board = chess.Board()
         self.fen_inicial = self.board.fen()
@@ -314,7 +324,11 @@ class GameSession:
         self.fator_antes_economia: float | None = None
         if logger is None:
             logger = MatchLogger(team_color=COR_PT[self.our_color].upper())
-            if config.ritmo == "armageddon":
+            logger.log_event(f"Motor: {descrever_motor(self.engine)}")
+            if config.ritmo == "armageddon" and self.usa_stockfish:
+                logger.log_event("Armageddon: empate classifica as Pretas (FAQ Item 12). "
+                                 "O Stockfish não tem contempt: avalia o empate como 0.")
+            elif config.ritmo == "armageddon":
                 logger.log_event(
                     f"Armageddon: contempt {self.engine.contempt:+d} cp (empate classifica as Pretas - FAQ Item 12)"
                 )
@@ -323,6 +337,16 @@ class GameSession:
     # ------------------------------------------------------------------
     # Consultas
     # ------------------------------------------------------------------
+    @property
+    def usa_stockfish(self) -> bool:
+        return isinstance(self.engine, MotorStockfish)
+
+    @property
+    def nome_motor(self) -> str:
+        if self.usa_stockfish:
+            return f"{self.engine.nome} ({NOME_DESEMPENHO.get(self.engine.desempenho, self.engine.desempenho)})"
+        return NOME_MOTOR["proprio"]
+
     @property
     def nome_cor(self) -> str:
         return COR_PT[self.our_color]
@@ -625,6 +649,8 @@ class GameSession:
     def retomar(cls, dados: dict) -> "GameSession":
         cfg = dict(dados["config"])
         cfg["our_color"] = cfg["our_color"] == "w"
+        cfg.setdefault("motor", "proprio")  # partidas salvas antes do Stockfish foram jogadas pelo motor próprio
+        cfg.setdefault("desempenho", "ultra")
         log_path = dados.get("log_path")
         logger = LogRetomado(log_path) if log_path and os.path.exists(log_path) else None
         sessao = cls(Config(**cfg), logger=logger)
@@ -643,7 +669,7 @@ class GameSession:
         sessao.inicio_turno = time.perf_counter()
         sessao.logger.log_event(
             f"Partida retomada pela interface: {len(dados['lances'])} meios-lances, "
-            f"relógio {dados['relogio_nosso']:.1f}s"
+            f"relógio {dados['relogio_nosso']:.1f}s. Motor: {descrever_motor(sessao.engine)}"
         )
         sessao.salvar()
         return sessao
