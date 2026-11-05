@@ -266,9 +266,10 @@ function desenharTopo() {
   const partes = [];
   if (E.ajustes.economia) partes.push('<span class="marcado">Economia ligada</span>');
   if (!E.ajustes.ponder) partes.push('<span class="fraco">Ponder desligado</span>');
-  if (E.ajustes.contempt !== 15) {
+  if (!E.stockfish && E.ajustes.contempt !== 15) {
     partes.push(`<span class="fraco">Contempt ${E.ajustes.contempt > 0 ? "+" : ""}${E.ajustes.contempt}</span>`);
   }
+  partes.push(`<span class="${E.stockfish ? "marcado" : "fraco"}">${esc(E.nome_motor)}</span>`);
   partes.push(`<span>Jogamos de ${esc(E.nome_cor)}</span>`);
   partes.push(`<span>Ritmo ${esc(E.ritmo)}</span>`);
   partes.push(`<strong>Lance ${E.lance_num}</strong>`);
@@ -285,8 +286,12 @@ function configInicio() {
     incremento: $("#incremento").value,
     ponder: $("#ponder").checked,
     operador: $("#operador").value,
+    motor: form.elements.motor.value || "proprio",
+    desempenho: form.elements.desempenho.value || "ultra",
   };
 }
+
+const NOME_DESEMPENHO = { ultra: "Ultra", medio: "Médio", baixo: "Baixo" };
 
 function desenharInicio() {
   const ini = E.inicio || {};
@@ -295,7 +300,12 @@ function desenharInicio() {
   const tablebases = ini.tablebases
     ? `Tablebases Syzygy prontas, até ${ini.tablebases} peças.`
     : "Tablebases Syzygy não encontradas: o motor joga normalmente sem elas.";
-  $("#ambiente").textContent = `${tablebases} Livro de aberturas ativo até o 10º meio-lance.`;
+  const radioStockfish = document.querySelector('#form-inicio input[name="motor"][value="stockfish"]');
+  radioStockfish.disabled = !ini.stockfish;
+  radioStockfish.closest("label").classList.toggle("indisponivel", !ini.stockfish);
+  if (!ini.stockfish) document.querySelector('#form-inicio input[name="motor"][value="proprio"]').checked = true;
+  const semStockfish = ini.stockfish ? "" : " Stockfish não encontrado: só o motor próprio. Instale com python tools/baixar_stockfish.py";
+  $("#ambiente").textContent = `${tablebases} Livro de aberturas ativo até o 10º meio-lance.${semStockfish}`;
   atualizarResumo();
   if (faseAnterior !== "inicio" && !dialogoAberto()) $("#comecar").focus();
 }
@@ -307,12 +317,26 @@ function atualizarResumo() {
   let html;
   if (c.ritmo === "armageddon") {
     const minutos = c.cor === "b" ? 4 : 5;
-    const plano = c.cor === "b" ? "procurar o empate (contempt −100)" : "evitar o empate (contempt +100)";
+    const plano = c.motor === "stockfish"
+      ? "O Stockfish não tem contempt: avalia o empate como 0."
+      : `O motor vai ${c.cor === "b" ? "procurar o empate (contempt −100)" : "evitar o empate (contempt +100)"}.`;
     html = `Jogamos de ${cor}, Armageddon com ${minutos} minutos e sem incremento.<br>
-      <span class="armageddon">O empate classifica as Pretas: o motor vai ${plano}.</span>`;
+      <span class="armageddon">O empate classifica as Pretas. ${plano}</span>`;
   } else {
     const [minutos, inc] = c.ritmo === "oficial" ? [15, 10] : c.ritmo === "edital" ? [25, 0] : [c.minutos, c.incremento];
     html = `Jogamos de ${cor}, ${esc(minutos)} minutos e ${esc(inc)} segundos de incremento por lance.`;
+  }
+  document.querySelectorAll('#form-inicio input[name="desempenho"]').forEach((el) => {
+    el.disabled = c.motor !== "stockfish";
+    el.closest("label").classList.toggle("indisponivel", el.disabled);
+  });
+  if (c.motor === "stockfish") {
+    const [threads, tabela] = (E.inicio && E.inicio.recursos && E.inicio.recursos[c.desempenho]) || ["?", "?"];
+    const total = c.desempenho === "ultra" ? " (força total)" : "";
+    html += `<br>Motor: Stockfish na busca e na avaliação, com a nossa gestão de tempo.
+      Desempenho ${NOME_DESEMPENHO[c.desempenho]}${total}: ${threads} ${threads === 1 ? "thread" : "threads"} e ${tabela} MB.`;
+  } else {
+    html += "<br>Motor: o próprio da equipe (reserva), que usa um processador só.";
   }
   html += `<br><span class="fraco">Pondering ${c.ponder ? "ligado" : "desligado"}. Operador: ${esc(c.operador)} s por lance.</span>`;
   $("#resumo").innerHTML = html;
@@ -336,6 +360,12 @@ function teclaInicio(ev) {
   else if (k === "o") {
     $("#ponder").checked = !$("#ponder").checked;
     atualizarResumo();
+  } else if (k === "m") {
+    const sf = document.querySelector('#form-inicio input[name="motor"][value="stockfish"]');
+    if (!sf.disabled) marcar("motor", sf.checked ? "proprio" : "stockfish");
+  } else if (k === "d") {
+    const atual = configInicio();
+    if (atual.motor === "stockfish") marcar("desempenho", { ultra: "medio", medio: "baixo", baixo: "ultra" }[atual.desempenho]);
   } else if (k === "enter" && (!alvo || alvo === document.body)) {
     ev.preventDefault();
     $("#form-inicio").requestSubmit();

@@ -145,6 +145,8 @@ input[type=radio], input[type=checkbox] { width: 18px; height: 18px; accent-colo
 .opcoes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 fieldset { margin: 0; padding: 10px 12px 12px; border: 1px solid var(--borda); border-radius: 8px; }
 legend { padding: 0 6px; color: var(--grafite); }
+.legenda-grupo { margin: 12px 0 2px; color: var(--grafite); }
+.opcao.indisponivel { opacity: .45; }
 label.opcao {
   display: flex;
   align-items: center;

@@ -16,6 +16,9 @@ Verifica:
  9. Pondering: inicia/para rápido e nunca roda junto com a busca principal
 10. Log obrigatório da banca (FAQ Item 9)
 11. Contempt contado a partir da nossa cor (Armageddon, FAQ Item 12)
+12. Motor do torneio: Stockfish com a nossa gestão de tempo (livro, desempenho Baixo/Médio/Ultra,
+    limite rígido, táticas, lances legais, ponder e reabertura se o processo cair). Sem Stockfish
+    instalado, só avisa.
 """
 
 import os
@@ -239,6 +242,68 @@ def run_all_tests() -> None:
     res = arm.search_best_move(adv, fixed_tm(1.0), use_book=False, use_tb=False, verbose=False)
     assert res.best_move.uci() != "f3g1", "O adversário simulado não deveria aceitar o empate que nos classifica"
     print(f"  -> Raiz do adversário (ponder): Brancas evitam o empate que classifica as Pretas ({res.best_move.uci()})")
+
+    # 12. Motor do torneio: Stockfish com a nossa gestão de tempo (FAQ itens 1 e 2)
+    print("\n[TESTE 12] Stockfish com a nossa gestão de tempo (FAQ itens 1 e 2)...")
+    from motor_stockfish import criar_motor, descrever_motor, encontrar_stockfish
+
+    if encontrar_stockfish() is None:
+        print("  -> [AVISO] Stockfish não encontrado: só o motor próprio está disponível.")
+        print("     Instale antes do torneio com: python tools/baixar_stockfish.py")
+    else:
+        sf = criar_motor("stockfish")
+        print(f"  -> {descrever_motor(sf)}")
+        res = sf.search_best_move(chess.Board(), fixed_tm(1.0), verbose=False)
+        assert res.source == "BOOK", "Na posição inicial, quem responde é o nosso livro de aberturas"
+        # Desempenho Baixo, Médio e Ultra no mesmo processo; termina em Ultra (força total)
+        from motor_stockfish import fmt_threads, recursos_do_nivel
+
+        for nivel in ("baixo", "medio", "ultra"):
+            sf.definir_desempenho(nivel)
+            assert (sf.threads, sf.hash_mb) == recursos_do_nivel(nivel), f"Recursos errados no nível {nivel}"
+            res_nivel = sf.search_best_move(random_positions(1, seed=40)[0], fixed_tm(0.2), use_book=False,
+                                            verbose=False)
+            assert res_nivel.nodes > 0
+        print("  -> Desempenho: " + ", ".join(
+            f"{nome} {fmt_threads(recursos_do_nivel(nivel)[0])}/{recursos_do_nivel(nivel)[1]} MB"
+            for nivel, nome in (("baixo", "Baixo"), ("medio", "Médio"), ("ultra", "Ultra"))))
+        print(f"  -> Livro de aberturas primeiro: {res.best_move.uci()}")
+        # Quem para a busca é a nossa gestão de tempo: com o relógio baixo, o limite rígido é curto
+        b = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 9")
+        tmx = TimeManager(initial_minutes=15, increment_seconds=10, move_overhead=0.5, operator_overhead=4.0)
+        tmx.remaining_time = 60.0
+        res = sf.search_best_move(b, tmx, use_book=False, verbose=False)
+        assert res.best_move in b.legal_moves and res.source == "SEARCH"
+        assert res.elapsed_sec <= tmx.hard_limit + 0.3, f"Passou do limite rígido: {res.elapsed_sec:.2f}s"
+        print(f"  -> Relógio com 60 s: {res.best_move.uci()} em {res.elapsed_sec:.2f}s (alvo {tmx.optimum:.2f}s, "
+              f"limite {tmx.hard_limit:.2f}s), profundidade {res.depth}, {res.nodes} nós")
+        for fen, best, name in tactics:
+            res = sf.search_best_move(chess.Board(fen), fixed_tm(1.0), use_book=False, verbose=False)
+            assert res.best_move.uci() == best, f"{name}: esperado {best}, obteve {res.best_move.uci()}"
+        print(f"  -> [OK] {len(tactics)}/{len(tactics)} posições táticas do teste 5")
+        for b in random_positions(20, seed=12):
+            res = sf.search_best_move(b, fixed_tm(0.1), use_book=False, verbose=False)
+            assert res.best_move in b.legal_moves, f"Lance ilegal {res.best_move} em {b.fen()}"
+        print("  -> [OK] 20/20 lances legais em posições aleatórias (0,1 s)")
+        ponder = PonderController(sf)
+        b = chess.Board()
+        b.push_uci("e2e4")
+        ponder.start_ponder(b, predicted_uci="e7e5")
+        time.sleep(0.5)
+        t0 = time.perf_counter()
+        ponder.stop_ponder()
+        stop_time = time.perf_counter() - t0
+        assert stop_time < 0.5, "O ponder com o Stockfish demorou demais para parar"
+        print(f"  -> Ponder interrompido em {stop_time * 1000:.0f} ms")
+        # Se o processo do Stockfish cair no meio do torneio, a próxima busca abre outro sozinha
+        if hasattr(os, "kill") and sys.platform != "win32":
+            import signal
+
+            os.kill(sf._sf.protocol.transport.get_pid(), signal.SIGKILL)
+            time.sleep(0.3)
+            res = sf.search_best_move(b, fixed_tm(0.3), use_book=False, verbose=False)
+            assert res.best_move in b.legal_moves
+            print("  -> [OK] Processo derrubado de propósito: a busca seguinte reabriu o Stockfish")
 
     print("\n======================================================================")
     print(f"   TODOS OS TESTES PASSARAM ({time.time() - t_start:.0f}s). MOTOR PRONTO PARA O TORNEIO!")
