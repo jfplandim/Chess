@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Challenge III</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header id="topo">
+  <div class="marca"><strong>Chess Challenge III</strong><span>ICEV 2026</span>
+    <a href="/documentacao" target="_blank" rel="noopener">Documentação</a></div>
+  <div id="topo-info"></div>
+</header>
+
+<div id="conexao" hidden>Sem conexão com o web.py. Confira se ele ainda está rodando no terminal.</div>
+
+<!-- ======================= Tela inicial ======================= -->
+<main id="inicio" hidden>
+  <form id="form-inicio" class="cartao">
+    <h1>Chess Challenge III</h1>
+    <p class="sub">ICEV 2026, interface de torneio</p>
+
+    <div id="salvo" hidden>
+      <p id="salvo-texto"></p>
+      <button type="button" id="retomar" class="secundario">Retomar partida</button>
+    </div>
+
+    <div class="opcoes">
+      <fieldset>
+        <legend>Nossa cor <kbd>B</kbd> <kbd>P</kbd></legend>
+        <label class="opcao"><input type="radio" name="cor" value="w" checked> Brancas</label>
+        <label class="opcao"><input type="radio" name="cor" value="b"> Pretas</label>
+      </fieldset>
+      <fieldset>
+        <legend>Ritmo <kbd>1</kbd> a <kbd>4</kbd></legend>
+        <label class="opcao"><input type="radio" name="ritmo" value="oficial" checked> 15 + 10, oficial</label>
+        <label class="opcao"><input type="radio" name="ritmo" value="armageddon"> Armageddon</label>
+        <label class="opcao"><input type="radio" name="ritmo" value="edital"> 25 + 0</label>
+        <label class="opcao"><input type="radio" name="ritmo" value="personalizado"> Personalizado</label>
+        <div id="personalizado" hidden>
+          <input id="minutos" value="15" inputmode="decimal" aria-label="Minutos"> min +
+          <input id="incremento" value="10" inputmode="decimal" aria-label="Incremento em segundos"> s
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Operação</legend>
+        <label class="opcao"><input type="checkbox" id="ponder" checked> Pondering <kbd>O</kbd></label>
+        <label class="campo-inicio">Operador, segundos por lance
+          <input id="operador" value="4" inputmode="decimal">
+        </label>
+      </fieldset>
+    </div>
+
+    <p id="resumo"></p>
+    <p id="ambiente"></p>
+    <button type="submit" id="comecar" class="primario">Começar partida</button>
+    <p class="dica">Enter começa a partida.</p>
+  </form>
+</main>
+
+<!-- ======================= Partida ======================= -->
+<main id="partida" hidden>
+  <section id="esquerda">
+    <div id="tabuleiro" aria-label="Tabuleiro"></div>
+  </section>
+  <section id="direita">
+    <section id="agora" class="painel">
+      <h2 id="agora-titulo">Agora</h2>
+      <div id="agora-corpo"></div>
+    </section>
+    <section id="relogios">
+      <div id="relogio-nosso" class="relogio painel"><h2></h2><div class="tempo">00:00</div></div>
+      <div id="relogio-adv" class="relogio painel"><h2></h2><div class="tempo">00:00</div></div>
+    </section>
+    <section id="baixo">
+      <section id="motor" class="painel">
+        <h2>Motor</h2>
+        <div id="motor-corpo"></div>
+      </section>
+      <section id="sumula" class="painel">
+        <h2>Súmula</h2>
+        <div id="sumula-lista"></div>
+      </section>
+    </section>
+  </section>
+</main>
+
+<footer id="barra" hidden>
+  <form id="form-lance" autocomplete="off">
+    <label id="rotulo-entrada" for="entrada">Lance do adversário</label>
+    <input id="entrada" maxlength="12" spellcheck="false" placeholder="ex.: e7e5">
+    <button type="submit" id="registrar" class="primario">Registrar</button>
+    <p id="previa"></p>
+  </form>
+  <nav id="acoes">
+    <button type="button" data-acao="ajuda"><kbd>F1</kbd>Ajuda</button>
+    <button type="button" data-acao="desfazer"><kbd>F2</kbd>Desfazer</button>
+    <button type="button" data-acao="relogio"><kbd>F3</kbd>Relógio</button>
+    <button type="button" data-acao="ajustes"><kbd>F4</kbd>Ajustes</button>
+    <button type="button" data-acao="posicao"><kbd>F5</kbd>Posição</button>
+    <button type="button" data-acao="economia"><kbd>F6</kbd>Economia</button>
+    <button type="button" data-acao="avaliar"><kbd>F7</kbd>Avaliar</button>
+    <button type="button" data-acao="ponder"><kbd>F8</kbd>Ponder</button>
+    <button type="button" data-acao="manual"><kbd>F9</kbd>Lance manual</button>
+    <button type="button" data-acao="encerrar" class="direita">Encerrar</button>
+  </nav>
+</footer>
+
+<!-- ======================= Diálogos ======================= -->
+<dialog id="dlg-desfazer">
+  <form method="dialog">
+    <h3>Desfazer lance</h3>
+    <p id="desfazer-texto"></p>
+    <p class="nota">O relógio interno não volta sozinho. Depois, confira com Relógio (F3).</p>
+    <div class="botoes">
+      <button value="cancelar">Cancelar</button>
+      <button value="2" id="desfazer-dois">Desfazer os 2 últimos</button>
+      <button value="1" class="primario" autofocus>Desfazer o último</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-relogio">
+  <form method="dialog" id="form-relogio">
+    <h3>Sincronizar relógios</h3>
+    <p id="relogio-aviso">Digite o que o relógio físico mostra agora. Ele é a referência.</p>
+    <label class="campo"><span id="relogio-rotulo-nosso">Nós</span><input id="relogio-nosso-valor" inputmode="numeric"></label>
+    <label class="campo"><span id="relogio-rotulo-adv">Adversário</span><input id="relogio-adv-valor" inputmode="numeric"></label>
+    <p class="nota">Formato MM:SS, como 12:30, ou só segundos, como 750.</p>
+    <p class="erro-dlg" id="relogio-erro"></p>
+    <div class="botoes">
+      <button type="button" data-fechar>Cancelar</button>
+      <button value="ok" class="primario">Sincronizar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-ajustes">
+  <form method="dialog" id="form-ajustes">
+    <h3>Ajustes</h3>
+    <label class="campo"><span>Operador (s por lance)</span><input id="aj-operador" inputmode="decimal"></label>
+    <p class="nota">Tempo para anunciar, mover a peça e apertar o relógio. Meçam no treino.</p>
+    <label class="campo"><span>Fator de tempo</span><input id="aj-fator" inputmode="decimal"></label>
+    <p class="nota">1 é o normal. 0,5 pensa metade do tempo; 1,3 pensa mais.</p>
+    <label class="campo"><span>Contempt (cp)</span><input id="aj-contempt" inputmode="numeric"></label>
+    <p class="nota">Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado.</p>
+    <label class="opcao"><input type="checkbox" id="aj-ponder"> Pondering</label>
+    <label class="opcao"><input type="checkbox" id="aj-som"> Som quando o motor joga</label>
+    <p class="erro-dlg" id="ajustes-erro"></p>
+    <div class="botoes">
+      <button type="button" data-fechar>Cancelar</button>
+      <button value="ok" class="primario">Salvar ajustes</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-posicao" class="largo">
+  <form method="dialog" id="form-posicao">
+    <h3>Corrigir a posição</h3>
+    <p>O tabuleiro físico é a referência. Cole ou digite o FEN da posição real.</p>
+    <input id="fen" class="largo" spellcheck="false">
+    <p id="fen-validacao" class="nota"></p>
+    <p class="nota">O histórico de repetição recomeça a partir desta posição.</p>
+    <div class="botoes">
+      <button type="button" data-fechar>Cancelar</button>
+      <button type="button" id="posicao-inicial">Posição inicial</button>
+      <button value="ok" class="primario">Aplicar posição</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-promocao">
+  <form method="dialog">
+    <h3>Promoção</h3>
+    <p id="promocao-pergunta">Qual peça o adversário escolheu?</p>
+    <div class="botoes">
+      <button value="n">Cavalo (n)</button>
+      <button value="b">Bispo (b)</button>
+      <button value="r">Torre (r)</button>
+      <button value="q" class="primario" autofocus>Dama (q)</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-manual">
+  <form method="dialog">
+    <h3>Lance manual</h3>
+    <p>Parar o motor e registrar um lance escolhido pela equipe? Use quando o lance jogado no tabuleiro
+      foi outro, por exemplo pela regra da peça tocada.</p>
+    <div class="botoes">
+      <button value="cancelar" autofocus>Continuar pensando</button>
+      <button value="ok" class="aviso-botao">Parar e digitar o lance</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-encerrar" class="largo">
+  <form method="dialog">
+    <h3>Encerrar a partida</h3>
+    <p>Use quando o árbitro declarar o resultado: abandono, acordo de empate ou queda de bandeira.
+      O resultado vai para o log.</p>
+    <div class="botoes">
+      <button value="empate">Empate</button>
+      <button value="derrota" class="perigo">Perdemos</button>
+      <button value="vitoria" class="sucesso">Vencemos</button>
+    </div>
+    <p class="nota">Para fechar sem resultado e continuar depois, use Sair: a partida fica salva.</p>
+    <div class="botoes">
+      <button value="sair">Sair e retomar depois</button>
+      <button value="cancelar" class="primario" autofocus>Voltar à partida</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-fim" class="largo">
+  <form method="dialog">
+    <h3>Fim da partida</h3>
+    <p id="fim-frase" class="destaque"></p>
+    <p class="nota">Log para a banca:<br><span id="fim-log"></span></p>
+    <div class="botoes">
+      <button value="copiar" type="button" id="copiar-log">Copiar caminho do log</button>
+      <button value="desfazer">Desfazer o último lance</button>
+      <button value="fechar">Ver o tabuleiro</button>
+      <button value="nova" class="primario" autofocus>Nova partida</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-ajuda" class="largo">
+  <form method="dialog">
+    <h3>Como jogar com a interface</h3>
+    <div class="ajuda">
+      <h4>A cada lance nosso</h4>
+      <ol>
+        <li>A placa <b>Agora</b> mostra o lance em letras grandes. Anuncie em voz alta, em UCI, e espere o adversário repetir.</li>
+        <li>Mova a peça no tabuleiro físico. A placa descreve o movimento, inclusive roque e promoção.</li>
+        <li>Aperte o relógio.</li>
+      </ol>
+      <h4>A cada lance do adversário</h4>
+      <p>Digite o lance anunciado e aperte <kbd>Enter</kbd>. Antes do Enter, a linha ao lado diz se o lance é legal e o que ele faz.
+        Também dá para clicar na peça e depois na casa de destino; o Enter confirma.</p>
+      <h4>Teclas e botões</h4>
+      <table>
+        <tr><td><kbd>Enter</kbd></td><td>Registra o lance digitado. Com o motor pausado, manda o motor pensar</td></tr>
+        <tr><td><kbd>Espaço</kbd></td><td>Enquanto o motor pensa, joga agora com o melhor lance encontrado</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Limpa o que foi digitado ou fecha o diálogo</td></tr>
+        <tr><td><kbd>F2</kbd></td><td>Desfaz o último meio-lance (para o motor se ele estiver pensando)</td></tr>
+        <tr><td><kbd>F3</kbd></td><td>Sincroniza com o relógio físico</td></tr>
+        <tr><td><kbd>F4</kbd></td><td>Ajustes: operador, fator de tempo, contempt, pondering e som</td></tr>
+        <tr><td><kbd>F5</kbd></td><td>Corrige a posição por FEN (nesta página o F5 não recarrega)</td></tr>
+        <tr><td><kbd>F6</kbd></td><td>Modo economia: metade do tempo por lance</td></tr>
+        <tr><td><kbd>F7</kbd></td><td>Avaliação estática da posição, sem busca</td></tr>
+        <tr><td><kbd>F8</kbd></td><td>Liga ou desliga o pondering</td></tr>
+        <tr><td><kbd>F9</kbd></td><td>Registra um lance nosso diferente do motor (regra da peça tocada)</td></tr>
+        <tr><td>Encerrar</td><td>Resultado declarado pelo árbitro, ou sair e retomar depois</td></tr>
+      </table>
+      <h4>Situações comuns</h4>
+      <ul>
+        <li><b>Digitei errado o lance do adversário:</b> Desfazer (F2); o motor para. Digite o lance certo.</li>
+        <li><b>O tabuleiro físico ficou diferente:</b> Posição (F5) e o FEN da posição real.</li>
+        <li><b>Desempate da melhor de 3 (FAQ item 12):</b> vale o tempo restante somado nas três partidas. Em posição morta, Economia (F6) guarda relógio.</li>
+        <li><b>Armageddon:</b> o contempt já vem ajustado. Com Brancas o motor evita o empate; com Pretas, procura.</li>
+        <li><b>A busca falhou:</b> entra um lance de emergência (avaliação em 1 lance), com aviso na tela e no log.</li>
+        <li><b>A página fechou ou travou:</b> abra o endereço de novo; a partida continua no web.py. Se o web.py fechou, rode-o de novo e escolha <b>Retomar partida</b>.</li>
+      </ul>
+      <p class="nota">Na súmula, os nossos lances aparecem em amarelo; <i>livro</i> é lance do livro de aberturas, <i>tb</i> de tablebase e <i>manual</i> registrado pela equipe.
+        O log oficial da banca (FAQ item 9) é gravado a cada lance na pasta <code>logs/</code>.</p>
+      <p>A <a href="/documentacao" target="_blank" rel="noopener">documentação completa do projeto</a> abre numa aba nova,
+        sem internet: instalação, arquitetura, o motor por dentro, regras e o guia da arguição.</p>
+    </div>
+    <div class="botoes"><button value="fechar" class="primario" autofocus>Fechar</button></div>
+  </form>
+</dialog>
+
+<div id="avisos" aria-live="polite"></div>
+
+<script>window.TOKEN = "__TOKEN__";</script>
+<script src="app.js"></script>
+</body>
+</html>
