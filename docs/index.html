@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentação do motor | Chess Challenge III</title>
+<link rel="icon" href="data:,">
+<style>
+/* Mesma paleta das interfaces ("mesa de torneio"). Só fontes do sistema: abre sem internet. */
+:root {
+  --madeira: #211A14;
+  --fundo-codigo: #1A1410;
+  --painel: #2B221A;
+  --borda: #4A3B2C;
+  --marfim: #EFE3CC;
+  --grafite: #A8977F;
+  --latao: #E8B44C;
+  --latao-claro: #F3D58C;
+  --feltro: #7FB77E;
+  --bandeira: #E0583F;
+  --texto: "Noto Sans", "DejaVu Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Fira Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--madeira); color: var(--marfim); font: 17px/1.65 var(--texto); }
+a { color: var(--latao); }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--latao); outline-offset: 2px; }
+.pular { position: absolute; left: -999px; top: 8px; padding: 8px 12px; background: var(--latao); color: var(--madeira); }
+.pular:focus { left: 8px; z-index: 5; }
+
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1260px; margin: 0 auto; }
+.indice {
+  position: sticky; top: 0; height: 100vh; overflow: auto;
+  padding: 30px 14px 30px 20px; border-right: 1px solid var(--borda); font-size: 15px;
+}
+.indice .marca { display: block; margin: 0 0 18px 10px; color: var(--latao); font-weight: 800; text-decoration: none; }
+.indice ol { margin: 0; padding: 0; list-style: none; }
+.indice a.secao {
+  display: block; padding: 5px 10px; border-left: 2px solid transparent;
+  color: var(--grafite); text-decoration: none;
+}
+.indice a.secao:hover { color: var(--marfim); }
+.indice a.secao.ativo { border-left-color: var(--latao); color: var(--latao); }
+
+main { padding: 40px 52px 90px; min-width: 0; }
+section { max-width: 80ch; margin: 0 0 72px; scroll-margin-top: 24px; }
+h1, h2, h3 { line-height: 1.2; }
+h2 { margin: 0 0 18px; color: var(--latao); font-size: 31px; }
+h3 { margin: 34px 0 10px; font-size: 21px; }
+h4 { margin: 22px 0 6px; font-size: 17px; color: var(--latao-claro); }
+p { margin: 0 0 14px; }
+ul, ol { margin: 0 0 16px; padding-left: 24px; }
+li { margin: 4px 0; }
+.fraco { color: var(--grafite); }
+code, kbd { font-family: var(--mono); font-size: .88em; }
+code { padding: 1px 6px; border-radius: 4px; background: var(--painel); color: var(--latao-claro); }
+kbd {
+  display: inline-block; padding: 0 6px; border: 1px solid var(--borda); border-bottom-width: 2px;
+  border-radius: 4px; background: var(--painel); color: var(--latao); font-weight: 700;
+}
+pre {
+  position: relative; margin: 10px 0 18px; padding: 14px 16px; overflow: auto;
+  border: 1px solid var(--borda); border-radius: 8px; background: var(--fundo-codigo);
+  font: 14px/1.6 var(--mono); color: var(--marfim);
+}
+pre code { padding: 0; background: none; color: inherit; font-size: inherit; }
+pre .com { color: var(--grafite); }
+.copiar {
+  position: absolute; top: 8px; right: 8px; padding: 3px 9px; border: 1px solid var(--borda);
+  border-radius: 5px; background: var(--painel); color: var(--grafite); font: 600 12px var(--texto); cursor: pointer;
+}
+.copiar:hover { color: var(--marfim); }
+table { width: 100%; margin: 12px 0 24px; border-collapse: collapse; font-size: 15.5px; }
+th, td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--borda); text-align: left; vertical-align: top; }
+th { color: var(--grafite); font-weight: 600; }
+td.num { white-space: nowrap; font-family: var(--mono); color: var(--latao-claro); }
+.ok { color: var(--feltro); font-weight: 700; }
+.nao { color: var(--bandeira); font-weight: 700; }
+.nota {
+  margin: 18px 0; padding: 12px 16px; border-left: 4px solid var(--latao);
+  border-radius: 4px; background: var(--painel);
+}
+.nota p:last-child { margin: 0; }
+figure { margin: 18px 0 28px; }
+figure img { display: block; width: 100%; height: auto; border: 1px solid var(--borda); border-radius: 8px; }
+figcaption { margin-top: 8px; color: var(--grafite); font-size: 14.5px; }
+.diagrama { width: 100%; height: auto; margin: 10px 0 8px; }
+.diagrama rect { fill: var(--painel); stroke: var(--borda); stroke-width: 1.5; }
+.diagrama .grupo { fill: none; stroke: var(--latao); stroke-width: 2; }
+.diagrama .terceiro { stroke-dasharray: 6 5; stroke: var(--grafite); }
+.diagrama .arq { fill: var(--marfim); font: 700 14px var(--mono); }
+.diagrama .desc { fill: var(--grafite); font: 13px var(--texto); }
+.diagrama .rotulo { fill: var(--latao); font: 700 13px var(--texto); }
+.diagrama .seta { stroke: var(--grafite); stroke-width: 1.6; fill: none; marker-end: url(#ponta); }
+.diagrama #ponta path { fill: var(--grafite); }
+details { margin: 10px 0; border: 1px solid var(--borda); border-radius: 8px; background: var(--painel); }
+summary { padding: 12px 16px; cursor: pointer; font-weight: 700; }
+details[open] summary { color: var(--latao); }
+details > div { padding: 0 16px 6px; }
+dl { margin: 0; }
+dt { margin-top: 14px; font-weight: 700; color: var(--latao-claro); }
+dd { margin: 2px 0 0; }
+
+/* Abertura */
+.abertura {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 36px; align-items: center;
+  max-width: none; margin-bottom: 60px; padding-bottom: 44px; border-bottom: 1px solid var(--borda);
+}
+.abertura h1 { margin: 0 0 12px; color: var(--latao); font-size: 46px; }
+.abertura .lide { margin: 0 0 22px; font-size: 19px; }
+.atalhos { display: flex; flex-wrap: wrap; gap: 10px; }
+.atalhos a {
+  padding: 8px 14px; border: 1px solid var(--latao); border-radius: 6px;
+  color: var(--latao); font-weight: 700; text-decoration: none;
+}
+.atalhos a.principal { background: var(--latao); color: var(--madeira); }
+.emblema { text-align: right; }
+.emblema .lance { display: flex; justify-content: flex-end; gap: .45em; color: var(--latao); font: 800 clamp(58px, 8vw, 112px)/1 var(--mono); }
+.emblema p { max-width: 280px; margin: 12px 0 0 auto; color: var(--grafite); font-size: 14.5px; }
+
+/* Passos do protocolo (sequência real: numeração faz sentido) */
+.passos { padding: 0; list-style: none; counter-reset: passo; }
+.passos > li { position: relative; margin: 0 0 12px; padding-left: 42px; counter-increment: passo; }
+.passos > li::before {
+  content: counter(passo); position: absolute; left: 0; top: 1px; width: 28px; padding: 1px 0;
+  border-radius: 5px; background: var(--latao); color: var(--madeira); font: 700 15px var(--mono); text-align: center;
+}
+
+@media (max-width: 920px) {
+  .layout { grid-template-columns: 1fr; }
+  .indice { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--borda); }
+  .indice ol { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+  main { padding: 28px 18px 70px; }
+  .abertura { grid-template-columns: 1fr; }
+  .emblema { text-align: left; }
+  .emblema .lance { justify-content: flex-start; }
+  .emblema p { margin-left: 0; }
+  table { display: block; overflow-x: auto; }
+  td.num { white-space: normal; }
+}
+
+/* Impressão: fundo branco para levar o guia da arguição no papel */
+@media print {
+  :root {
+    --madeira: #fff; --fundo-codigo: #f6f6f6; --painel: #f2f2f2; --borda: #bbb;
+    --marfim: #111; --grafite: #444; --latao: #7a4e00; --latao-claro: #7a4e00; --feltro: #1d6b1a; --bandeira: #a42a15;
+    color-scheme: light;
+  }
+  body { font-size: 12pt; }
+  .indice, .copiar, .atalhos, .pular { display: none; }
+  .layout { display: block; }
+  main { padding: 0; }
+  section { break-inside: auto; margin-bottom: 28px; }
+  details { border: 0; background: none; }
+  details > div { display: block; }
+  figure { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="pular" href="#visao-geral">Pular para o conteúdo</a>
+<div class="layout">
+
+<nav class="indice" aria-label="Índice">
+  <a class="marca" href="#topo">Chess Challenge III</a>
+  <ol>
+    <li><a class="secao" href="#visao-geral">Visão geral</a></li>
+    <li><a class="secao" href="#comecar">Instalar e rodar</a></li>
+    <li><a class="secao" href="#partida">Durante a partida</a></li>
+    <li><a class="secao" href="#interfaces">Interfaces</a></li>
+    <li><a class="secao" href="#arquitetura">Arquitetura</a></li>
+    <li><a class="secao" href="#motor">O motor por dentro</a></li>
+    <li><a class="secao" href="#regras">Regras e conformidade</a></li>
+    <li><a class="secao" href="#log">Log da banca</a></li>
+    <li><a class="secao" href="#testes">Testes e validação</a></li>
+    <li><a class="secao" href="#torneio">Dia do torneio</a></li>
+    <li><a class="secao" href="#arguicao">Arguição da banca</a></li>
+    <li><a class="secao" href="#problemas">Problemas comuns</a></li>
+    <li><a class="secao" href="#glossario">Glossário</a></li>
+  </ol>
+</nav>
+
+<main id="topo">
+
+<header class="abertura">
+  <div>
+    <h1>Chess Challenge III</h1>
+    <p class="lide">Motor de xadrez em Python para o torneio do ICEV 2026. A avaliação, a busca e a
+      gestão de tempo são da equipe; três interfaces levam o motor para a mesa de jogo.</p>
+    <div class="atalhos">
+      <a class="principal" href="#comecar">Instalar e rodar</a>
+      <a href="#partida">Durante a partida</a>
+      <a href="#arguicao">Arguição da banca</a>
+    </div>
+  </div>
+  <div class="emblema" aria-hidden="true">
+    <div class="lance"><span>E2</span><span>E4</span></div>
+    <p>Na mesa, o operador anuncia o lance em UCI (FAQ item 10). Todo o projeto gira em torno desse momento.</p>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<section id="visao-geral">
+  <h2>Visão geral</h2>
+  <p>O motor escolhe os lances com busca alfa-beta e avaliação próprias, controla o próprio
+    relógio e conversa com o operador por uma interface no navegador, no terminal ou em modo
+    texto. A biblioteca <code>python-chess</code> só representa o tabuleiro e gera os lances
+    legais, como permite o FAQ item 14.</p>
+
+  <h3>O que é da equipe</h3>
+  <p>O FAQ item 2 pede pelo menos um componente decisório de autoria própria. Os três são da equipe:</p>
+  <table>
+    <tr><th>Componente</th><th>Arquivo</th><th>Em uma frase</th></tr>
+    <tr><td>Avaliação</td><td><code>evaluation.py</code></td><td>Dá uma nota à posição: material, mobilidade, rei, peões, ameaças e finais.</td></tr>
+    <tr><td>Busca</td><td><code>search.py</code></td><td>Explora a árvore de lances com aprofundamento iterativo, PVS, tabela de transposição e podas seletivas.</td></tr>
+    <tr><td>Gestão de tempo</td><td><code>time_manager.py</code></td><td>Decide quanto pensar em cada lance, descontando o tempo que o operador gasta na mesa.</td></tr>
+  </table>
+  <p>As interfaces (<code>web.py</code>, <code>tui.py</code>, <code>main.py</code>), o registro da partida
+    (<code>session.py</code>, <code>logger.py</code>) e as ferramentas de teste também são da equipe.
+    Livro de aberturas, tablebases Syzygy e os valores iniciais da tabela PeSTO são de terceiros e
+    não contam como autoria.</p>
+
+  <h3>Números medidos</h3>
+  <table>
+    <tr><th>Medição</th><th>Resultado</th></tr>
+    <tr><td>Versão 2 contra a versão anterior (40 partidas, 20 s + 0,2 s, mesma gestão de tempo)</td><td class="num">+38 =2 −0</td></tr>
+    <tr><td>Profundidade em 5 s, posições de meio-jogo</td><td class="num">12 a 17 (antes 5 a 8)</td></tr>
+    <tr><td>Velocidade no notebook da equipe, modo de energia normal (medida em 04/11/2026)</td><td class="num">16 a 18 mil nós/s</td></tr>
+    <tr><td>A mesma velocidade no modo de economia de energia</td><td class="num">≈ 6 mil nós/s</td></tr>
+    <tr><td>Ritmo do torneio simulado (3 + 2 com 0,8 s de operador)</td><td class="num">nunca estourou o relógio</td></tr>
+    <tr><td>Velocidade do motor com a interface aberta, em relação a sem ela</td><td class="num">96% (terminal), 94% (navegador)</td></tr>
+  </table>
+  <p class="fraco">Os números vêm de partidas e medições feitas com as ferramentas da pasta <code>tools/</code>
+    e com <code>test_engine.py</code>; a seção <a href="#testes">Testes e validação</a> explica como repetir.</p>
+
+  <h3>Declaração para o credenciamento (FAQ item 1)</h3>
+  <table>
+    <tr><th>Item</th><th>Declaração</th></tr>
+    <tr><td>Projeto-base</td><td><code>jfplandim/Chess</code>, commit <code>ccee6c7</code></td></tr>
+    <tr><td>Autoria própria (item 2)</td><td>Avaliação, busca e gestão de tempo</td></tr>
+    <tr><td>Bibliotecas (item 14)</td><td><code>chess</code> 1.11.2 (python-chess) para tabuleiro e lances legais; <code>textual</code> 8.2.8 só para a interface no terminal. Ambas em <code>requirements.txt</code>. A interface no navegador usa só a biblioteca padrão do Python.</td></tr>
+    <tr><td>Livro (item 3)</td><td>Linhas clássicas embutidas em <code>book_and_tb.py</code>, até 10 meios-lances</td></tr>
+    <tr><td>Tablebases (item 4)</td><td>Syzygy de até 5 peças, baixadas antes do evento</td></tr>
+    <tr><td>Hardware e modelos (itens 5 a 8 e 15)</td><td>Notebook da equipe, só CPU, sem GPU e sem pesos de modelo</td></tr>
+    <tr><td>Rede (item 14)</td><td>Nenhuma requisição externa durante as partidas; a interface no navegador só escuta em <code>127.0.0.1</code></td></tr>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="comecar">
+  <h2>Instalar e rodar</h2>
+  <p>Requer Python 3.10 ou mais novo (testado no 3.14). Use o CPython: para este motor ele é mais
+    rápido que o PyPy, porque os bitboards de 64 bits viram inteiros grandes no PyPy.</p>
+  <ol class="passos">
+    <li><strong>Instale as dependências</strong>, com internet, antes do evento:
+      <pre><code>pip install -r requirements.txt</code></pre></li>
+    <li><strong>Baixe as tablebases</strong> de até 5 peças (opcional, cerca de 940 MB). Sem elas o motor joga normalmente:
+      <pre><code>python tools/baixar_syzygy.py</code></pre></li>
+    <li><strong>Valide o motor</strong> antes de cada partida. Tem que terminar com “TODOS OS TESTES PASSARAM”:
+      <pre><code>python test_engine.py</code></pre></li>
+    <li><strong>Abra uma interface</strong>, já sem internet:
+      <pre><code>python web.py    <span class="com"># no navegador: http://127.0.0.1:8765</span>
+python tui.py    <span class="com"># no terminal</span>
+python main.py   <span class="com"># modo texto, reserva</span></code></pre></li>
+  </ol>
+</section>
+
+<!-- ================================================================ -->
+<section id="partida">
+  <h2>Durante a partida</h2>
+  <p>O FAQ item 10 define o protocolo da mesa. As interfaces guiam o operador em cada passo:</p>
+  <ol class="passos">
+    <li><strong>Anunciar.</strong> Quando o motor joga, a placa <em>Agora</em> mostra o lance em letras
+      grandes, em UCI (como <code>g1f3</code>), e um bipe avisa. O operador anuncia em voz alta.</li>
+    <li><strong>Confirmar.</strong> A equipe adversária repete o lance.</li>
+    <li><strong>Mover e apertar o relógio.</strong> A placa descreve o movimento (“Cavalo de g1 para f3”,
+      “Roque pequeno: rei de e1 para g1 e torre de h1 para f1”, promoções e capturas en passant).</li>
+    <li><strong>Registrar o lance do adversário.</strong> Digite o que ele anunciar e aperte <kbd>Enter</kbd>.
+      Antes do Enter a interface já diz se o lance é legal e o que ele faz. Também dá para clicar na
+      peça e depois na casa de destino.</li>
+  </ol>
+
+  <figure>
+    <img src="img/web-anunciar.png" alt="Interface no navegador: placa com o lance G1 F3 em letras grandes, tabuleiro com o cavalo de g8 selecionado e destinos marcados, relógios, motor e súmula" width="1366" height="768">
+    <figcaption>Interface no navegador na vez do adversário: a placa mostra o nosso lance a anunciar e,
+      embaixo, o operador já começou a digitar o lance adversário (<code>g8</code>): o tabuleiro marca os destinos possíveis.</figcaption>
+  </figure>
+
+  <h3>Teclas</h3>
+  <p>As mesmas no navegador e no terminal. No navegador, todas também são botões.</p>
+  <table>
+    <tr><th>Tecla</th><th>O que faz</th></tr>
+    <tr><td><kbd>Enter</kbd></td><td>Registra o lance digitado. Com o motor pausado, manda o motor pensar.</td></tr>
+    <tr><td><kbd>Espaço</kbd></td><td>Enquanto o motor pensa, joga agora com o melhor lance encontrado.</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Limpa o que foi digitado ou fecha o diálogo.</td></tr>
+    <tr><td><kbd>F1</kbd></td><td>Ajuda.</td></tr>
+    <tr><td><kbd>F2</kbd></td><td>Desfaz o último meio-lance (e para o motor, se ele estiver pensando).</td></tr>
+    <tr><td><kbd>F3</kbd></td><td>Sincroniza com o relógio físico (MM:SS).</td></tr>
+    <tr><td><kbd>F4</kbd></td><td>Ajustes: segundos do operador, fator de tempo, contempt, pondering e som.</td></tr>
+    <tr><td><kbd>F5</kbd></td><td>Corrige a posição por FEN. O tabuleiro físico é a referência.</td></tr>
+    <tr><td><kbd>F6</kbd></td><td>Modo economia: o motor usa metade do tempo por lance.</td></tr>
+    <tr><td><kbd>F7</kbd></td><td>Avaliação estática da posição, sem busca.</td></tr>
+    <tr><td><kbd>F8</kbd></td><td>Liga ou desliga o pondering.</td></tr>
+    <tr><td><kbd>F9</kbd></td><td>Registra um lance nosso diferente do motor (regra da peça tocada). Vai ao log como MANUAL.</td></tr>
+    <tr><td>Encerrar (<kbd>Ctrl</kbd>+<kbd>Q</kbd> no terminal)</td><td>Resultado declarado pelo árbitro (abandono, acordo, queda de bandeira) ou sair e retomar depois.</td></tr>
+  </table>
+
+  <h3>Situações comuns</h3>
+  <table>
+    <tr><th>Situação</th><th>O que fazer</th></tr>
+    <tr><td>Digitei errado o lance do adversário</td><td><kbd>F2</kbd> desfaz; se o motor já estava pensando, ele para. Digite o lance certo.</td></tr>
+    <tr><td>O tabuleiro físico ficou diferente do programa</td><td><kbd>F5</kbd> e o FEN da posição real. O histórico de repetição recomeça a partir dela.</td></tr>
+    <tr><td>Tocamos numa peça e tivemos de jogar outro lance</td><td><kbd>F9</kbd>, digite o lance que foi jogado.</td></tr>
+    <tr><td>O relógio do programa se afastou do físico</td><td><kbd>F3</kbd> a cada uns 10 lances, com o que o relógio físico mostra.</td></tr>
+    <tr><td>Posição morta e a melhor de 3 pode ir para o desempate por tempo</td><td><kbd>F6</kbd>: o desempate soma o tempo restante das três partidas (FAQ item 12).</td></tr>
+    <tr><td>Armageddon</td><td>Nada a fazer: o contempt já vem ajustado. Com Brancas o motor evita o empate; com Pretas, procura.</td></tr>
+    <tr><td>O árbitro declarou o resultado</td><td>Encerrar e escolha o resultado; ele vai para o log.</td></tr>
+    <tr><td>O notebook travou ou a janela fechou</td><td>Rode a interface de novo e escolha <strong>Retomar partida</strong>. Depois confira os relógios.</td></tr>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="interfaces">
+  <h2>Interfaces</h2>
+  <p>Três formas de jogar a mesma partida. As duas primeiras compartilham a lógica de
+    <code>session.py</code> e o arquivo de salvamento: uma retoma a partida da outra.</p>
+
+  <h3>No navegador: <code>python web.py</code></h3>
+  <p>Um servidor local abre <code>http://127.0.0.1:8765</code> no navegador; o terminal só mostra esse
+    endereço. A página tem tabuleiro clicável com peças desenhadas, a placa de anúncio, relógios,
+    motor ao vivo, súmula e botões para todos os comandos.</p>
+  <ul>
+    <li><strong>Só nesta máquina:</strong> o servidor escuta apenas em <code>127.0.0.1</code> e a página não carrega
+      nada da internet. Um código gerado a cada execução impede que outra página do navegador mande
+      comandos para a partida.</li>
+    <li><strong>A partida mora no <code>web.py</code>, não na aba:</strong> fechar ou recarregar a página não perde
+      nada. O <kbd>F5</kbd> desta página corrige a posição em vez de recarregar.</li>
+    <li><strong>Para desligar:</strong> Encerrar &gt; Sair e retomar depois, ou <kbd>Ctrl</kbd>+<kbd>C</kbd> no terminal.</li>
+    <li><code>--porta 9000</code> usa outra porta; <code>--sem-navegador</code> não abre o navegador sozinho.</li>
+    <li>Esta documentação também fica em <code>/documentacao</code> enquanto o <code>web.py</code> está rodando.</li>
+  </ul>
+  <figure>
+    <img src="img/web-pensando.png" alt="Interface no navegador com o motor pensando: barra de progresso do tempo, profundidade 13, avaliação e linha principal" width="1366" height="768">
+    <figcaption>Motor pensando: a placa mostra o tempo gasto contra o tempo previsto, e o painel do motor
+      atualiza a profundidade, a avaliação e a linha principal a cada iteração.</figcaption>
+  </figure>
+
+  <h3>No terminal: <code>python tui.py</code></h3>
+  <p>A mesma interface em modo texto, feita com Textual: placa com o lance em letras de bloco,
+    tabuleiro com fichas (letras R, D, T, B, C, P ou símbolos), relógios grandes e as mesmas teclas.
+    O rodapé aceita clique, útil se o terminal capturar alguma tecla F (o GNOME Terminal usa o
+    <kbd>F1</kbd>). Maximize o terminal: o ideal é pelo menos 120 × 36 caracteres.</p>
+
+  <h3>Modo texto: <code>python main.py</code></h3>
+  <p>A interface original, por comandos digitados: <code>undo</code>, <code>fen</code>, <code>forcar</code>,
+    <code>tempo</code>, <code>operador</code>, <code>fator</code>, <code>contempt</code>, <code>ponder</code>,
+    <code>avaliar</code>, <code>log</code> e <code>sair</code>. Ao começar, ela abre no navegador um tabuleiro
+    que se atualiza sozinho a cada lance (<code>tabuleiro.html</code>, contribuição do PR #2). Serve de reserva
+    se as outras duas não abrirem.</p>
+
+  <h3>UCI: <code>python uci.py</code></h3>
+  <p>Protocolo padrão para programas como Arena, CuteChess e En Croissant, usado também pelo
+    <code>tools/match.py</code>. Opções: <code>Hash</code>, <code>Move Overhead</code>, <code>OwnBook</code>,
+    <code>Ponder</code>, <code>Contempt</code>, <code>SyzygyPath</code> e <code>Log</code>.</p>
+
+  <h3>Salvamento e retomada</h3>
+  <p>A cada lance, a partida é gravada em <code>logs/partida_em_andamento.json</code> (cor, ritmo, lances,
+    relógios, ajustes e o caminho do log). Ao abrir a interface de novo, aparece <strong>Retomar partida</strong>:
+    ela reconstrói a posição, continua o mesmo log e pede para conferir os relógios. Começar uma partida
+    nova guarda a anterior em <code>partida_salva_anterior.json</code> em vez de apagar.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="arquitetura">
+  <h2>Arquitetura</h2>
+  <svg class="diagrama" viewBox="0 0 760 430" role="img" aria-labelledby="diagrama-titulo">
+    <title id="diagrama-titulo">Camadas do projeto: interfaces, partida, motor e python-chess</title>
+    <defs>
+      <marker id="ponta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z"/>
+      </marker>
+    </defs>
+    <!-- interfaces -->
+    <rect x="10" y="10" width="170" height="70" rx="8"/>
+    <text class="arq" x="95" y="39" text-anchor="middle">web.py, web/</text>
+    <text class="desc" x="95" y="62" text-anchor="middle">navegador</text>
+    <rect x="200" y="10" width="170" height="70" rx="8"/>
+    <text class="arq" x="285" y="39" text-anchor="middle">tui.py</text>
+    <text class="desc" x="285" y="62" text-anchor="middle">terminal</text>
+    <rect x="390" y="10" width="170" height="70" rx="8"/>
+    <text class="arq" x="475" y="39" text-anchor="middle">main.py</text>
+    <text class="desc" x="475" y="62" text-anchor="middle">modo texto</text>
+    <rect x="580" y="10" width="170" height="70" rx="8"/>
+    <text class="arq" x="665" y="39" text-anchor="middle">uci.py</text>
+    <text class="desc" x="665" y="62" text-anchor="middle">GUIs e matches</text>
+    <!-- partida e log -->
+    <rect x="10" y="130" width="360" height="62" rx="8"/>
+    <text class="arq" x="190" y="156" text-anchor="middle">session.py</text>
+    <text class="desc" x="190" y="178" text-anchor="middle">partida: fases, relógio, log e salvamento</text>
+    <rect x="390" y="130" width="150" height="62" rx="8"/>
+    <text class="arq" x="465" y="156" text-anchor="middle">logger.py</text>
+    <text class="desc" x="465" y="178" text-anchor="middle">log da banca</text>
+    <!-- motor -->
+    <rect class="grupo" x="10" y="232" width="740" height="112" rx="10"/>
+    <text class="rotulo" x="24" y="252">Motor, autoria da equipe</text>
+    <rect x="24" y="262" width="168" height="66" rx="8"/>
+    <text class="arq" x="108" y="289" text-anchor="middle">search.py</text>
+    <text class="desc" x="108" y="311" text-anchor="middle">busca</text>
+    <rect x="206" y="262" width="168" height="66" rx="8"/>
+    <text class="arq" x="290" y="289" text-anchor="middle">evaluation.py</text>
+    <text class="desc" x="290" y="311" text-anchor="middle">avaliação</text>
+    <rect x="388" y="262" width="168" height="66" rx="8"/>
+    <text class="arq" x="472" y="289" text-anchor="middle">time_manager.py</text>
+    <text class="desc" x="472" y="311" text-anchor="middle">gestão de tempo</text>
+    <rect x="570" y="262" width="166" height="66" rx="8"/>
+    <text class="arq" x="653" y="289" text-anchor="middle">book_and_tb.py</text>
+    <text class="desc" x="653" y="311" text-anchor="middle">livro e Syzygy</text>
+    <!-- biblioteca -->
+    <rect class="terceiro" x="10" y="372" width="740" height="48" rx="8"/>
+    <text class="desc" x="380" y="401" text-anchor="middle">python-chess (biblioteca): tabuleiro, lances legais e desenho das peças</text>
+    <!-- setas -->
+    <path class="seta" d="M95,80 L95,128"/>
+    <path class="seta" d="M285,80 L285,128"/>
+    <path class="seta" d="M465,80 L465,128"/>
+    <path class="seta" d="M370,161 L388,161"/>
+    <path class="seta" d="M190,192 L190,230"/>
+    <path class="seta" d="M552,80 L552,230"/>
+    <path class="seta" d="M665,80 L665,230"/>
+    <path class="seta" d="M380,344 L380,370"/>
+  </svg>
+  <p class="fraco">O navegador e o terminal usam <code>session.py</code>; o modo texto e o UCI chamam o motor direto.
+    Dentro do motor, a busca chama a avaliação, o relógio e o livro com as tablebases.</p>
+
+  <h3>Arquivos</h3>
+  <table>
+    <tr><th>Arquivo</th><th>Responsabilidade</th></tr>
+    <tr><td><code>search.py</code></td><td>Busca: aprofundamento iterativo, aspiração, PVS, tabela de transposição, quiescência, SEE, podas e reduções, lances em estágios, repetição, tablebases na busca.</td></tr>
+    <tr><td><code>evaluation.py</code></td><td>Avaliação: tapered eval, mobilidade, segurança do rei, estrutura de peões com cache, peões passados, ameaças, finais e mop-up.</td></tr>
+    <tr><td><code>time_manager.py</code></td><td>Orçamento por lance com o custo do operador, limites flexível e rígido, extensão por instabilidade.</td></tr>
+    <tr><td><code>book_and_tb.py</code></td><td>Livro (trava de 10 meios-lances) e Syzygy (até 5 peças).</td></tr>
+    <tr><td><code>session.py</code></td><td>Partida das interfaces: registra lances, relógio, log, pondering, desfazer, posição, salvamento e retomada.</td></tr>
+    <tr><td><code>web.py</code>, <code>web/</code></td><td>Interface no navegador: servidor local (biblioteca padrão) e a página.</td></tr>
+    <tr><td><code>tui.py</code>, <code>tui.tcss</code></td><td>Interface no terminal (Textual).</td></tr>
+    <tr><td><code>main.py</code></td><td>Modo texto, pondering, lance de emergência e regras de fim de partida usadas por todos.</td></tr>
+    <tr><td><code>logger.py</code></td><td>Log obrigatório da banca (FAQ item 9).</td></tr>
+    <tr><td><code>uci.py</code></td><td>Protocolo UCI.</td></tr>
+    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (11 testes).</td></tr>
+    <tr><td><code>tools/</code></td><td><code>match.py</code> (versão contra versão, com Elo), <code>bench.py</code>, <code>baixar_syzygy.py</code> e os scripts de Texel Tuning.</td></tr>
+  </table>
+
+  <h3>O caminho de um lance</h3>
+  <ol class="passos">
+    <li>O operador registra o lance adversário; <code>session.py</code> confere a legalidade, desconta o tempo do
+      adversário, grava a linha no log e para o pondering.</li>
+    <li>A busca começa numa cópia do tabuleiro, numa thread separada, para a interface continuar respondendo.</li>
+    <li><code>search_best_move</code> tenta, nesta ordem: livro de aberturas, tablebase na raiz e, se nenhum resolver,
+      aprofundamento iterativo dentro do tempo que <code>time_manager.py</code> calculou.</li>
+    <li>O lance volta para a sessão: o relógio interno desconta o tempo gasto mais o custo do operador, a linha
+      do log é gravada com profundidade, nós, avaliação, PV e tempo, e a partida é salva.</li>
+    <li>A interface mostra o lance na placa e o pondering começa a pensar no lance que o adversário deve jogar.</li>
+  </ol>
+</section>
+
+<!-- ================================================================ -->
+<section id="motor">
+  <h2>O motor por dentro</h2>
+
+  <h3>Busca</h3>
+  <p><strong>Aprofundamento iterativo com Negamax alfa-beta e PVS.</strong> O motor busca com profundidade
+    1, 2, 3 e assim por diante. Cada iteração reaproveita a anterior (tabela de transposição e melhor
+    lance primeiro); se o tempo acaba no meio de uma iteração, usa o melhor lance já provado nela.</p>
+  <ul>
+    <li><strong>Janela de aspiração:</strong> a partir da profundidade 4, a raiz busca numa janela estreita
+      (±30 cp) em volta da nota anterior e alarga se falhar.</li>
+    <li><strong>PVS:</strong> o primeiro lance é buscado com janela cheia; os outros com janela nula, só
+      para provar que são piores. Se algum surpreender, é rebuscado com janela cheia.</li>
+    <li><strong>Tabela de transposição:</strong> 2^20 entradas com chave de 64 bits calculada direto dos
+      bitboards (cerca de 0,2 µs, contra 20 µs do Zobrist da biblioteca).</li>
+  </ul>
+  <p>Python é lento, então a profundidade vem de não olhar o que não importa:</p>
+  <table>
+    <tr><th>Técnica</th><th>Ideia</th></tr>
+    <tr><td>Reverse futility pruning</td><td>Perto das folhas, se a nota estática menos uma margem ainda passa de beta, corta.</td></tr>
+    <tr><td>Null move pruning</td><td>“Passa a vez”: se mesmo assim o rival não alcança beta, a posição é boa demais e o ramo é cortado.</td></tr>
+    <tr><td>Razoring</td><td>Nota muito abaixo de alfa perto do fim: confirma só com a quiescência.</td></tr>
+    <tr><td>Late move pruning</td><td>Em profundidade baixa, depois de vários lances quietos, os seguintes são podados.</td></tr>
+    <tr><td>Futility pruning</td><td>Lance quieto que não dá xeque e não consegue levantar alfa é podado.</td></tr>
+    <tr><td>Late move reductions</td><td>Lances tardios são buscados mais rasos; se surpreenderem, rebusca completa.</td></tr>
+    <tr><td>Internal iterative reduction</td><td>Sem lance da tabela de transposição, reduz 1 nível.</td></tr>
+    <tr><td>Extensão de xeque</td><td>Em xeque, busca 1 nível a mais.</td></tr>
+    <tr><td>Mate distance pruning</td><td>Não procura mates mais longos que um já encontrado.</td></tr>
+  </table>
+  <p><strong>Contra a cegueira tática</strong> (defeitos encontrados com a bateria WAC e corrigidos): lances que
+    dão xeque nunca são podados; a busca do lance nulo sempre tem pelo menos 1 nível completo; a margem do
+    razoring é grande; sacrifícios com xeque não sofrem redução.</p>
+  <p><strong>Efeito horizonte:</strong> na profundidade zero a <em>quiescência</em> continua só com capturas e
+    promoções (e todas as fugas, se houver xeque) até a posição ficar calma, com delta pruning e SEE para
+    descartar capturas que perdem material.</p>
+  <p><strong>Ordenação dos lances</strong>, em estágios: lance da tabela de transposição, capturas boas e
+    promoções, killer moves e counter-move, lances quietos pela history heuristic e, por último, capturas
+    ruins. Como o corte quase sempre sai nos primeiros estágios, os lances quietos muitas vezes nem são gerados.</p>
+
+  <h3>Avaliação</h3>
+  <ul>
+    <li><strong>Tapered eval:</strong> cada termo tem valor de meio-jogo e de final; a fase da partida (24 até 0,
+      pelas peças em jogo) mistura os dois. Os dois valores andam juntos num único inteiro.</li>
+    <li><strong>Material e tabelas de casas</strong> no estilo PeSTO, <strong>mobilidade</strong> (casas seguras),
+      <strong>segurança do rei</strong> (ataques na zona do rei, escudo de peões, colunas abertas),
+      <strong>par de bispos</strong> e <strong>torres</strong> em colunas abertas e na sétima.</li>
+    <li><strong>Ameaças:</strong> peça atacada por peão e peça pendurada, aproveitando os mapas de ataque da mobilidade.</li>
+    <li><strong>Peões com cache:</strong> passados, isolados, dobrados e conectados são calculados uma vez por estrutura.</li>
+    <li><strong>Finais:</strong> distância dos reis aos peões passados, finais sem chance de vitória escalados para o
+      empate e mop-up para dar mate com pouco material, inclusive Bispo e Cavalo.</li>
+    <li>Avaliação <strong>simétrica</strong>: espelhar a posição só troca o sinal (testado).</li>
+  </ul>
+
+  <h3>Gestão de tempo</h3>
+  <pre><code>tempo_alvo = (relógio − reserva + lances_restantes × (incremento − custo_do_operador)) / lances_restantes</code></pre>
+  <ul>
+    <li>O <strong>custo do operador</strong> (anúncio, tabuleiro, relógio) entra na conta: no Armageddon sem
+      incremento é isso que evita perder por tempo.</li>
+    <li>Um <strong>limite rígido</strong> interrompe a busca na hora; uma nova profundidade só começa se houver
+      tempo provável para terminá-la.</li>
+    <li><strong>Instabilidade:</strong> se o melhor lance muda, a nota cai ou a raiz falha baixo, o motor pensa mais;
+      com o lance estável, economiza. Lance único é jogado na hora.</li>
+    <li>O <strong>fator de tempo</strong> (F4) e o <strong>modo economia</strong> (F6) multiplicam o orçamento.</li>
+  </ul>
+
+  <h3>Livro e tablebases</h3>
+  <p>O livro embutido tem trava de 10 meios-lances (FAQ item 3). As tablebases Syzygy (FAQ item 4, até 5 peças)
+    escolhem o lance na raiz pelo DTZ (mate imediato primeiro) e, dentro da busca, dão o resultado exato logo
+    depois das capturas.</p>
+
+  <h3>Pondering</h3>
+  <p>Durante a vez do adversário, o motor pensa na posição depois do lance que ele prevê. Quando o lance real é
+    registrado, o pondering para em milissegundos; se era o previsto, a tabela de transposição já tem a árvore
+    pronta. A busca do pondering e a principal nunca rodam ao mesmo tempo.</p>
+
+  <h3>Empates e contempt</h3>
+  <p>A repetição é detectada por uma pilha própria de chaves, junto com a regra dos 50 lances. Um empate vale
+    −15 cp para nós (<em>contempt</em>): o motor evita repetir em posições iguais, porque joga para ganhar. No
+    <strong>Armageddon</strong> o empate classifica as Pretas, então o contempt vira +100 com Brancas e −100 com
+    Pretas, contado a partir da nossa cor, inclusive no pondering e nos empates de tablebase. A partida só
+    termina por repetição ou 50 lances quando isso já aconteceu no tabuleiro, como o árbitro declara.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="regras">
+  <h2>Regras e conformidade</h2>
+  <p>Cada item do FAQ do evento e como o projeto o atende.</p>
+  <table>
+    <tr><th>Item</th><th>Regra</th><th>Como atendemos</th></tr>
+    <tr><td class="num">1</td><td>Declarar o projeto-base e o commit de origem</td><td>Tabela na <a href="#visao-geral">visão geral</a> e no README.</td></tr>
+    <tr><td class="num">2</td><td>Ao menos um componente decisório de autoria própria</td><td>Os três: avaliação, busca e gestão de tempo.</td></tr>
+    <tr><td class="num">3</td><td>Livro até 10 meios-lances</td><td>Trava em <code>book_and_tb.py</code> (<code>MAX_BOOK_PLIES = 10</code>), coberta por teste.</td></tr>
+    <tr><td class="num">4</td><td>Tablebases até 5 peças</td><td><code>MAX_SYZYGY_PIECES = 5</code>: posições com mais peças nunca são consultadas.</td></tr>
+    <tr><td class="num">5 e 6</td><td>Notebook da equipe</td><td>Roda num notebook comum, só com CPU.</td></tr>
+    <tr><td class="num">7</td><td>15 minutos + 10 s por lance</td><td>Ritmo padrão das interfaces; a gestão de tempo nunca estourou o relógio nos testes.</td></tr>
+    <tr><td class="num">8</td><td>GPU local e declarada</td><td>Não usamos GPU.</td></tr>
+    <tr><td class="num">9</td><td>Log por lance com nº, cor, UCI, profundidade, nós, avaliação, PV e tempo</td><td>Todos os campos, a cada lance, em <code>.log</code> e <code>.txt</code>. Veja <a href="#log">Log da banca</a>.</td></tr>
+    <tr><td class="num">10</td><td>Anúncio em UCI e lance digitado em cada software</td><td>Placa de anúncio em UCI; entrada validada; lance ilegal é recusado com a explicação.</td></tr>
+    <tr><td class="num">11</td><td>Cores por pareamento</td><td>A cor é escolhida ao começar a partida.</td></tr>
+    <tr><td class="num">12</td><td>Empates automáticos, desempate por tempo e Armageddon</td><td>Fim de partida real, modo economia para o desempate e contempt automático no Armageddon (5 e 4 minutos, sem incremento).</td></tr>
+    <tr><td class="num">13</td><td>Pondering permitido</td><td>Ligado por padrão (F8 alterna).</td></tr>
+    <tr><td class="num">14</td><td>Bibliotecas locais, sem rede, dependências declaradas</td><td><code>requirements.txt</code> fixa as versões; nenhuma requisição externa; a página só escuta em <code>127.0.0.1</code>.</td></tr>
+    <tr><td class="num">15</td><td>Pesos de modelos</td><td>Não usamos modelos.</td></tr>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="log">
+  <h2>Log da banca</h2>
+  <p>O FAQ item 9 exige, para cada lance, número, cor, lance em UCI, profundidade, nós avaliados, avaliação,
+    variante principal e tempo gasto. O log é gravado a cada lance em <code>logs/partida_AAAAMMDD_HHMMSS.log</code>
+    e espelhado em <code>logs/ultima_partida_banca.txt</code>, no mesmo formato nas três interfaces.</p>
+  <pre><code>Nº   | COR     | LANCE (UCI) | PROF.  | NÓS AVALIADOS  | AVALIAÇÃO        | TEMPO    | VARIANTE PRINCIPAL (PV)
+1    | BRANCAS | d2d4        | 1      | 1              | +37 cp (+0.37)   |  0.000s | [BOOK] d2d4
+1    | PRETAS  | e7e5        | -      | -              | (Adversário)     | 10.670s | Lance adversário anunciado: e7e5
+2    | BRANCAS | d4e5        | 4      | 347            | +76 cp (+0.76)   |  0.044s | d4e5 b8c6 g1f3 d7d5
+# [21:06:01] EVENTO: Fim da partida: 1-0 (CHECKMATE)</code></pre>
+  <p>As linhas que começam com <code>#</code> são eventos: desfazer, posição corrigida, relógio sincronizado,
+    ajustes, lance manual, lance de emergência e o resultado. A origem do lance aparece antes da PV:
+    <code>[BOOK]</code> livro, <code>[SYZYGY_TB]</code> tablebase, <code>[MANUAL]</code> registrado pela equipe e
+    <code>[EMERGENCY]</code> lance de emergência.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="testes">
+  <h2>Testes e validação</h2>
+  <h3>Bateria de validação</h3>
+  <pre><code>python test_engine.py</code></pre>
+  <ol>
+    <li>Avaliação equilibrada na posição inicial e simétrica com a posição espelhada.</li>
+    <li>Livro ativo até o 10º meio-lance e desligado no 11º.</li>
+    <li>Geração de lances em estágios igual à lista de lances legais.</li>
+    <li>SEE em trocas simples.</li>
+    <li>Táticas: mates em 1 e 2, sacrifício de dama com mate (WAC.001) e garfo de cavalo.</li>
+    <li>Empates: repetição, material insuficiente e afogamento.</li>
+    <li>Gestão de tempo: nunca orça mais do que o relógio tem (15 + 10, 25 + 0, Armageddon, apuro).</li>
+    <li>A busca sempre devolve lance legal (60 posições aleatórias, 0,15 s).</li>
+    <li>Pondering inicia, para rápido e não concorre com a busca.</li>
+    <li>Log da banca gravado com os campos exigidos.</li>
+    <li>Contempt contado a partir da nossa cor no Armageddon.</li>
+  </ol>
+
+  <h3>Versão contra versão</h3>
+  <p>Toda mudança no motor só entrou depois de ganhar um match contra a versão anterior. O
+    <code>tools/match.py</code> joga as duas versões a partir de aberturas equilibradas, cada abertura duas vezes
+    com as cores trocadas, e calcula a diferença de Elo com intervalo de confiança de 95% e a LOS
+    (probabilidade de a nova ser mais forte).</p>
+  <pre><code>python tools/match.py --a "python uci.py" --a-name NOVO --a-opt Log=false \
+                      --b "python ../versao_antiga/uci.py" --b-name ANTIGO \
+                      --games 100 --tc 20+0.2 --concurrency 3</code></pre>
+  <table>
+    <tr><th>Experimento</th><th>Resultado</th><th>Decisão</th></tr>
+    <tr><td>Termos de ameaça na avaliação</td><td class="num">+42 =31 −27 (+52 Elo, LOS 96,5%)</td><td class="ok">aceito</td></tr>
+    <tr><td>Pesos do Texel Tuning (posições de partidas da CCRL)</td><td class="num">+6 =4 −17 (−150 Elo)</td><td class="nao">rejeitado</td></tr>
+    <tr><td>Sacrifício com xeque sem redução</td><td class="num">WAC 197 → 200 de 300; +26 =17 −17</td><td class="ok">aceito</td></tr>
+  </table>
+  <p>Para táticas, a referência é a bateria WAC (300 posições “Win At Chess”). Para velocidade,
+    <code>python tools/bench.py</code> no notebook do torneio.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="torneio">
+  <h2>Dia do torneio</h2>
+  <ol class="passos">
+    <li>Notebook na tomada, modo de energia <strong>desempenho</strong> e outros programas fechados. No modo de
+      economia de energia o motor fica cerca de três vezes mais lento.</li>
+    <li>Rode <code>python test_engine.py</code> e confira “TODOS OS TESTES PASSARAM”.</li>
+    <li>Desligue o Wi-Fi e os dados móveis (FAQ item 14).</li>
+    <li>Abra a interface e escolha a cor, o ritmo (15 + 10 ou Armageddon), o pondering ligado e os segundos que o
+      operador gasta por lance. Meçam esse tempo no treino: o padrão é 4 s.</li>
+    <li>A cada uns 10 lances, sincronize com o relógio físico (<kbd>F3</kbd>).</li>
+    <li>No fim, entregue à banca o log da partida (o diálogo de fim mostra o caminho).</li>
+  </ol>
+</section>
+
+<!-- ================================================================ -->
+<section id="arguicao">
+  <h2>Arguição da banca</h2>
+  <p>Perguntas que a banca deve fazer, com respostas curtas. Os detalhes estão nas seções acima.</p>
+  <details>
+    <summary>O que é de autoria da equipe e o que é de terceiros?</summary>
+    <div><p>Avaliação, busca e gestão de tempo são da equipe, assim como as interfaces e as ferramentas de teste.
+      A <code>python-chess</code> só representa o tabuleiro e gera os lances legais. Livro, tablebases e os valores
+      iniciais do PeSTO são de terceiros e foram declarados.</p></div>
+  </details>
+  <details>
+    <summary>Como funciona a busca?</summary>
+    <div><p>Aprofundamento iterativo com Negamax alfa-beta e PVS, janela de aspiração e tabela de transposição.
+      Se o tempo acaba no meio de uma iteração, o motor joga o melhor lance já provado nela.</p></div>
+  </details>
+  <details>
+    <summary>Como a árvore fica tão profunda em Python?</summary>
+    <div><p>Podando o que não importa: reverse futility, null move, razoring, late move pruning, futility, LMR e
+      redução sem lance da tabela, mais ordenação em estágios que evita gerar lances quietos. Lances que dão
+      xeque nunca são podados, para não perder táticas.</p></div>
+  </details>
+  <details>
+    <summary>E o efeito horizonte?</summary>
+    <div><p>A quiescência continua só com capturas e promoções até a posição ficar calma, com SEE para descartar
+      capturas que perdem material e delta pruning.</p></div>
+  </details>
+  <details>
+    <summary>Como funciona a avaliação?</summary>
+    <div><p>Tapered eval com material, tabelas de casas, mobilidade, segurança do rei, estrutura de peões com
+      cache, ameaças e conhecimento de finais. É simétrica: espelhar a posição só troca o sinal.</p></div>
+  </details>
+  <details>
+    <summary>Os números da avaliação são de vocês?</summary>
+    <div><p>O código é todo nosso. As tabelas de material e de casas partem dos valores públicos do PeSTO, um ponto
+      de partida conhecido; os outros termos foram criados e calibrados pela equipe. Também implementamos Texel
+      Tuning: o erro estatístico caiu 2,5%, mas os pesos ajustados perderam 150 Elo no match, então ficamos com
+      os nossos. O que manda é o resultado em partidas.</p></div>
+  </details>
+  <details>
+    <summary>Como funciona a gestão de tempo?</summary>
+    <div><p>O orçamento divide o relógio pelos lances restantes, somando o incremento e descontando o custo do
+      operador. Há limites flexível e rígido, e o motor pensa mais quando o melhor lance muda ou a nota cai.</p></div>
+  </details>
+  <details>
+    <summary>Como vocês sabem que cada mudança melhorou o motor?</summary>
+    <div><p>Com matches versão contra versão no <code>tools/match.py</code>, com Elo, intervalo de confiança e LOS,
+      e com a bateria tática WAC. Mudanças que perderam o match foram descartadas, como o Texel Tuning.</p></div>
+  </details>
+  <details>
+    <summary>Como o software lida com o atraso do anúncio verbal?</summary>
+    <div><p>A gestão de tempo desconta os segundos que o operador gasta por lance (ajustável), o pondering usa o
+      tempo do adversário e o relógio pode ser sincronizado com o físico a qualquer momento.</p></div>
+  </details>
+</section>
+
+<!-- ================================================================ -->
+<section id="problemas">
+  <h2>Problemas comuns</h2>
+  <table>
+    <tr><th>Sintoma</th><th>O que fazer</th></tr>
+    <tr><td>O navegador não abriu sozinho</td><td>Abra o endereço que o <code>web.py</code> mostra no terminal (normalmente <code>http://127.0.0.1:8765</code>).</td></tr>
+    <tr><td>“Nenhuma porta livre”</td><td><code>python web.py --porta 9000</code>.</td></tr>
+    <tr><td>A página mostra “Sem conexão com o web.py”</td><td>O servidor fechou: rode <code>python web.py</code> de novo e escolha Retomar partida.</td></tr>
+    <tr><td>Alguma tecla F não funciona no terminal</td><td>O terminal pode capturá-la (o GNOME Terminal usa o F1): clique no rodapé.</td></tr>
+    <tr><td>O motor ficou lento</td><td>Confira a tomada e o modo de energia; feche outros programas. <code>python tools/bench.py</code> mede a velocidade.</td></tr>
+    <tr><td>A busca falhou no meio da partida</td><td>A interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log; <kbd>F2</kbd> desfaz se a equipe preferir outro.</td></tr>
+    <tr><td>“Tablebases Syzygy não encontradas”</td><td>Só um aviso: o motor joga sem elas. Para usar, rode <code>python tools/baixar_syzygy.py</code> antes do evento.</td></tr>
+    <tr><td>A interface não abre de jeito nenhum</td><td>Use o modo texto: <code>python main.py</code>.</td></tr>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="glossario">
+  <h2>Glossário</h2>
+  <dl>
+    <dt>UCI</dt><dd>Notação de lance por casas de origem e destino (<code>e2e4</code>, <code>e7e8q</code>) e, também, o protocolo de comunicação entre motores e programas de xadrez.</dd>
+    <dt>FEN</dt><dd>Texto que descreve uma posição inteira: peças, quem joga, roques, en passant e contadores.</dd>
+    <dt>Meio-lance</dt><dd>O lance de um dos lados (em inglês, <em>ply</em>). Um lance completo tem dois meios-lances.</dd>
+    <dt>Nó</dt><dd>Cada posição examinada pela busca.</dd>
+    <dt>Profundidade e profundidade seletiva</dt><dd>Quantos meios-lances a busca completou em todas as linhas, e até onde as linhas mais longas chegaram.</dd>
+    <dt>PV</dt><dd>Variante principal: a sequência que o motor espera, começando pelo lance escolhido.</dd>
+    <dt>Tabela de transposição</dt><dd>Memória das posições já avaliadas, para não refazer a mesma busca quando a posição se repete por outro caminho.</dd>
+    <dt>PVS e janela de aspiração</dt><dd>Formas de buscar com limites estreitos: mais cortes, rebusca quando a suposição falha.</dd>
+    <dt>Quiescência</dt><dd>Extensão da busca só com capturas e promoções, para avaliar posições calmas.</dd>
+    <dt>SEE</dt><dd>Avaliação estática de trocas: simula a sequência de capturas numa casa para saber se ela ganha ou perde material.</dd>
+    <dt>LMR</dt><dd>Redução de lances tardios: lances mal ordenados são buscados mais rasos.</dd>
+    <dt>Contempt</dt><dd>Quanto o motor desvaloriza (ou valoriza) um empate.</dd>
+    <dt>Pondering</dt><dd>Pensar durante a vez do adversário.</dd>
+    <dt>Syzygy, WDL e DTZ</dt><dd>Tablebases de finais com resultado exato: vitória, empate ou derrota (WDL) e a distância até zerar a contagem dos 50 lances (DTZ).</dd>
+    <dt>Elo e LOS</dt><dd>Diferença de força estimada a partir de partidas, e a probabilidade de uma versão ser mais forte que a outra.</dd>
+  </dl>
+</section>
+
+<p class="fraco">Documentação do projeto Chess Challenge III, ICEV 2026. A versão em texto está no README do repositório.</p>
+</main>
+</div>
+
+<script>
+// Botão de copiar nos blocos de comando
+document.querySelectorAll("pre").forEach((bloco) => {
+  const botao = document.createElement("button");
+  botao.className = "copiar";
+  botao.type = "button";
+  botao.textContent = "Copiar";
+  botao.addEventListener("click", async () => {
+    const texto = bloco.querySelector("code").innerText;
+    try {
+      await navigator.clipboard.writeText(texto);
+    } catch (erro) {
+      const area = document.createElement("textarea");
+      area.value = texto;
+      document.body.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+    botao.textContent = "Copiado";
+    setTimeout(() => { botao.textContent = "Copiar"; }, 1500);
+  });
+  bloco.append(botao);
+});
+
+// Índice: marca a seção que está na tela
+const links = new Map([...document.querySelectorAll(".indice a.secao")].map((a) => [a.hash.slice(1), a]));
+const observador = new IntersectionObserver((entradas) => {
+  for (const entrada of entradas) {
+    if (!entrada.isIntersecting) continue;
+    links.forEach((a) => a.classList.remove("ativo"));
+    const link = links.get(entrada.target.id);
+    if (link) link.classList.add("ativo");
+  }
+}, { rootMargin: "-20% 0px -70% 0px" });
+document.querySelectorAll("main section[id]").forEach((secao) => observador.observe(secao));
+</script>
+</body>
+</html>

@@ -12,6 +12,9 @@ env/
 gerar_pdf.py
 *.pdf
 *.html
+# ...exceto as páginas do projeto: interface no navegador e documentação
+!web/index.html
+!docs/index.html
 
 # Logs de partidas de teste locais
 logs/
