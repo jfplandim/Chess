@@ -1,17 +1,21 @@
 # Motor de Xadrez — Chess Challenge III (ICEV 2026)
 
-Motor de xadrez em Python para o **III Chess Challenge — ICEV 2026**. A biblioteca
-`python-chess` é usada **somente** para representar o tabuleiro e gerar lances legais
-(permitido pelo **Item 14 do FAQ**). Os três componentes decisórios exigidos pelo
-**Item 2 do FAQ** são de autoria própria:
+Motor de xadrez para o **III Chess Challenge — ICEV 2026**.
 
-1. **Função de Avaliação** (`evaluation.py`)
-2. **Busca e Seleção de Lances** (`search.py`)
-3. **Gestão Dinâmica de Tempo** (`time_manager.py`)
+- **Motor do torneio:** o **Stockfish 19** faz a busca e a avaliação (projeto-base declarado,
+  permitido pelo **Item 1 do FAQ**). A **gestão de tempo é da equipe** (`time_manager.py`,
+  componente de autoria própria do **Item 2**): é ela que decide quanto o Stockfish pensa em cada
+  lance e quando ele para.
+- **Motor próprio (reserva):** o motor da equipe em Python, com avaliação (`evaluation.py`),
+  busca (`search.py`) e gestão de tempo (`time_manager.py`) de autoria própria. Escolhido na tela
+  inicial (tecla M), caso o Stockfish não esteja disponível.
+- A biblioteca `python-chess` só representa o tabuleiro e gera lances legais (**Item 14**).
 
-**Documentação completa:** [`docs/index.html`](docs/index.html). Abra o arquivo no navegador (funciona sem
-internet) ou, com `python web.py` rodando, em `http://127.0.0.1:8765/documentacao`. Tem instalação, uso
-durante a partida, arquitetura, o motor por dentro, conformidade com o FAQ e o guia da arguição.
+**Documentação completa: <https://jfplandim.github.io/Chess/>**. A mesma página está em
+[`docs/index.html`](docs/index.html), que abre no navegador sem internet, e em
+`http://127.0.0.1:8765/documentacao` com o `python web.py` rodando. Tem instalação, uso durante a
+partida, arquitetura, o Stockfish com a nossa gestão de tempo, o motor próprio, conformidade com o
+FAQ e o guia da arguição.
 
 ---
 
@@ -19,21 +23,39 @@ durante a partida, arquitetura, o motor por dentro, conformidade com o FAQ e o g
 
 | Item | Declaração |
 | :--- | :--- |
-| Projeto-base | [`jfplandim/Chess`](https://github.com/jfplandim/Chess), commit `ccee6c7` |
-| Autoria própria (Item 2) | Avaliação (`evaluation.py`), busca (`search.py`) e gestão de tempo (`time_manager.py`) |
-| Bibliotecas (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; `textual` 8.2.8, só para desenhar a interface. Ambas declaradas em `requirements.txt` |
-| Livro (Item 3) | Linhas clássicas de abertura embutidas em `book_and_tb.py`, até 10 meios-lances |
-| Tablebases (Item 4) | Syzygy de até 5 peças, baixadas antes do evento com `tools/baixar_syzygy.py` |
-| Tabelas da avaliação | Valores públicos do PeSTO como ponto de partida (seção 10 do guia da banca) |
-| Hardware (Itens 5 a 8) | Notebook da equipe, só CPU, sem GPU |
-| Modelos (Item 15) | Nenhum peso de modelo |
+| Projeto-base | **Stockfish 19** (versão oficial `sf_19`), na busca e na avaliação do motor do torneio; e [`jfplandim/Chess`](https://github.com/jfplandim/Chess), commit `ccee6c7`, para o motor próprio e as interfaces |
+| Autoria própria (Item 2) | **Gestão de tempo** (`time_manager.py`), que controla o Stockfish por meio de `motor_stockfish.py`. No motor próprio (reserva), também a avaliação (`evaluation.py`) e a busca (`search.py`) |
+| Licença do Stockfish (Item 1) | GPLv3. Roda como programa separado, conversando por UCI, sem nenhuma alteração no código dele. Não está no repositório: é baixado por `tools/baixar_stockfish.py`. Código-fonte: [official-stockfish/Stockfish, tag `sf_19`](https://github.com/official-stockfish/Stockfish/tree/sf_19) |
+| Bibliotecas (Item 14) | `chess` 1.11.2 (python-chess), só para tabuleiro e lances legais; `textual` 8.2.8, só para desenhar a interface. Ambas em `requirements.txt`. Programa externo: Stockfish 19 |
+| Livro (Item 3) | Linhas clássicas de abertura embutidas em `book_and_tb.py`, até 10 meios-lances, usadas pelos dois motores |
+| Tablebases (Item 4) | Syzygy de até 5 peças, baixadas antes do evento com `tools/baixar_syzygy.py`. O Stockfish recebe `SyzygyProbeLimit 5` |
+| Tabelas da avaliação | Valores públicos do PeSTO como ponto de partida do motor próprio (seção 10 do guia da banca) |
+| Hardware (Itens 5 a 8) | Notebook da equipe, só CPU. O Stockfish usa todos os threads do processador e uma tabela de transposição proporcional à RAM (no notebook de testes: 4 threads e 2048 MB). Sem GPU: o Stockfish não usa |
+| Modelos (Item 15) | A rede neural (NNUE) que vem dentro do Stockfish 19: peso de terceiros, não conta como autoria. Nenhum peso treinado pela equipe |
 | Rede (Item 14) | Nenhuma requisição externa durante as partidas |
 
-Livro, tablebases e tabelas PeSTO são de terceiros e não contam como autoria da equipe.
+Stockfish, a rede neural dele, livro, tablebases e tabelas PeSTO são de terceiros e não contam como
+autoria da equipe.
 
 ---
 
-## Resultado da versão 2 (medido)
+## Motor do torneio: Stockfish com a nossa gestão de tempo (medido)
+
+| Métrica | Resultado |
+| :--- | :---: |
+| Velocidade do Stockfish 19 no notebook da equipe (4 threads, 2048 MB, `tools/bench_stockfish.py`) | **1,9 milhão de nós/s** (o motor próprio faz 13 a 22 mil) |
+| Nossa gestão de tempo x a do próprio Stockfish (o mesmo Stockfish dos dois lados, 12 partidas, 40 s + 0,4 s, 0,16 s de operador descontado por lance dos dois lados) | **+0 =12 −0** |
+| Tempo médio por lance | **0,74 s** (nosso) x 1,14 s (Stockfish): 34% menos |
+| Menor relógio em todo o match | **19,1 s** (nosso) x 1,5 s (Stockfish) |
+| `python test_engine.py`, teste 12 (livro, limite rígido, táticas, lances legais, ponder, reabertura) | passa |
+
+Entre dois Stockfish quase tudo empata, e o confronto empatado se decide pela soma do tempo restante
+(FAQ Item 12). Doze partidas não medem pequenas diferenças de força, mas mostram que economizar
+relógio não custou nenhum resultado. Comando para repetir na seção *Ferramentas de teste*.
+
+---
+
+## Motor próprio: resultado da versão 2 (medido)
 
 | Métrica | Versão anterior | Versão atual |
 | :--- | :---: | :---: |
@@ -58,25 +80,75 @@ Como reproduzir: `python tools/match.py --help` (veja a seção *Ferramentas*).
 
 ## Como instalar e executar
 
-### 1. Instalar a dependência (antes do torneio, com internet)
+### 1. Instalar as dependências (antes do torneio, com internet)
 Requer **Python 3.10 ou superior** (testado no 3.14; o CPython é mais rápido que o PyPy
-para este motor, pois os bitboards de 64 bits viram inteiros grandes no PyPy).
+para o motor próprio, pois os bitboards de 64 bits viram inteiros grandes no PyPy).
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. (Recomendado) Baixar as Tablebases Syzygy de até 5 peças (FAQ Item 4)
+### 2. Baixar o Stockfish 19 (antes do torneio, com internet)
+```bash
+python tools/baixar_stockfish.py       # ~80 MB, instala em ../stockfish/ (fora do repositório)
+```
+Baixa a versão oficial para o sistema (Linux, Windows ou macOS), confere o SHA-256 publicado no
+GitHub e testa o executável. O build "universal" escolhe sozinho a versão mais rápida para o
+processador. Em outra pasta, aponte a variável `STOCKFISH_PATH` para o executável.
+
+**Força total em qualquer computador.** O Stockfish se ajusta sozinho ao hardware:
+
+- **Processador:** o build "universal" escolhe a versão mais rápida que o processador aceita
+  (AVX2, AVX-512, VNNI...).
+- **Threads:** usa todos os threads que o programa pode usar.
+- **Tabela de transposição:** cresce com a RAM: 512 MB abaixo de 7 GB, 1024 MB até 14 GB, 2048 MB
+  até 30 GB e 4096 MB acima disso. Dá para forçar outros valores com `STOCKFISH_THREADS` e
+  `STOCKFISH_HASH`.
+- **Força:** nenhuma opção limita a força.
+- **GPU:** não faz diferença. O Stockfish roda no processador, e a rede neural dele (NNUE) foi
+  feita para a CPU. O que conta é o processador e a energia: na bateria ou em modo de economia ele
+  fica bem mais lento, e a abertura das interfaces avisa.
+
+**Desempenho: Ultra, Médio ou Baixo.** Todas as interfaces deixam escolher quanto do computador o
+Stockfish usa (tecla D na tela inicial do navegador e da TUI, uma pergunta no `main.py`, opção
+`Desempenho` no `uci.py`). O nível fica salvo com a partida e aparece no topo da tela e no log da banca.
+
+| Nível | Threads | Tabela de transposição | No notebook de testes |
+| :--- | :--- | :--- | :--- |
+| **Ultra** (padrão, força total) | todos | pela RAM | 4 threads, 2048 MB |
+| **Médio** | metade | metade | 2 threads, 1024 MB |
+| **Baixo** | 1 | 256 MB | 1 thread, 256 MB |
+
+No torneio, use o **Ultra**. Médio e Baixo servem para um notebook fraco, na bateria ou com outros
+programas abertos, e para testes. O motor próprio usa um processador só, então o desempenho não
+vale para ele.
+
+Para escolher o notebook do torneio, rode nos computadores da equipe e leve o que tiver o maior
+número de nós por segundo:
+
+```bash
+python tools/bench_stockfish.py        # cerca de 30 a 45 s; 1,9 milhão de nós/s no notebook de testes
+python tools/bench_stockfish.py --desempenho medio   # mede os outros níveis
+```
+
+Não precisa decorar: ao abrir, `python web.py`, `python tui.py` e `python main.py` conferem se o
+Stockfish está instalado e roda neste computador. Se não estiver, avisam e perguntam
+"Instalar o Stockfish 19 agora? [S/n]": Enter instala (com internet) e a partida já começa com ele;
+`n` segue com o motor próprio. Nada acessa a internet sem essa resposta.
+
+### 3. (Recomendado) Baixar as Tablebases Syzygy de até 5 peças (FAQ Item 4)
 ```bash
 python tools/baixar_syzygy.py          # ~940 MB, cria a pasta syzygy/
 ```
-Sem a pasta `syzygy/` o motor funciona normalmente (só não usa as tablebases).
+Sem a pasta `syzygy/` os dois motores funcionam normalmente (só não usam as tablebases).
 
-### 3. Validar o motor (rode antes de cada partida)
+### 4. Validar o motor (rode antes de cada partida)
 ```bash
 python test_engine.py
 ```
+São 12 testes. O 12º confere o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas,
+lances legais, pondering e reabertura se o processo cair.
 
-### 4. Partida oficial (100% offline)
+### 5. Partida oficial (100% offline)
 ```bash
 python web.py          # interface no navegador (gráfica)
 python tui.py          # a mesma interface no terminal
@@ -88,7 +160,7 @@ python main.py         # modo texto, se nenhuma das duas abrir
 ## Interface no navegador (`web.py`)
 
 A interface de torneio em versão gráfica: `python web.py` abre `http://127.0.0.1:8765` no
-navegador e o terminal só mostra esse endereço. Tem as mesmas fases, teclas e regras da TUI
+navegador; o terminal só mostra a conferência do Stockfish e esse endereço. Tem as mesmas fases, teclas e regras da TUI
 (descrita abaixo), com peças desenhadas, tabuleiro clicável e botões para todos os comandos.
 
 - **Só nesta máquina:** o servidor escuta apenas em `127.0.0.1` e a página não carrega nada da
@@ -108,9 +180,11 @@ navegador e o terminal só mostra esse endereço. Tem as mesmas fases, teclas e 
 
 Feita para a mesa do torneio: o operador não digita comandos, só o lance do adversário.
 
-- **Tela inicial:** cor (tecla B ou P), ritmo (1 a 4: 15+10, Armageddon, 25+0 ou
-  personalizado), pondering e segundos do operador. Enter começa a partida. Se a partida
-  anterior foi interrompida, aparece **Retomar partida**.
+- **Tela inicial:** cor (tecla B ou P), motor (tecla M: Stockfish ou o próprio, reserva),
+  ritmo (1 a 4: 15+10, Armageddon, 25+0 ou personalizado), pondering, segundos do operador e
+  desempenho do Stockfish (tecla D: Ultra, Médio ou Baixo).
+  Enter começa a partida. Se a partida anterior foi interrompida, aparece **Retomar partida**,
+  com o mesmo motor. O topo da partida mostra o motor em uso (por exemplo, "Stockfish 19").
 - **Placa "Agora":** diz o que fazer em cada momento. Quando o motor joga, o lance aparece em
   letras grandes com os passos do FAQ Item 10: anunciar, mover a peça (com a descrição do
   movimento, inclusive roque e promoção), apertar o relógio e digitar o lance do adversário.
@@ -132,7 +206,7 @@ Feita para a mesa do torneio: o operador não digita comandos, só o lance do ad
 | F1 | Ajuda |
 | F2 | Desfaz o último meio-lance (e para o motor, se ele estiver pensando) |
 | F3 | Sincroniza com o relógio físico (MM:SS) |
-| F4 | Ajustes: operador, fator de tempo, contempt, pondering, som e peças |
+| F4 | Ajustes: operador, fator de tempo, contempt (só motor próprio), pondering, som e peças |
 | F5 | Corrige a posição por FEN (o tabuleiro físico é a referência) |
 | F6 | Modo economia: metade do tempo por lance (desempate por tempo, FAQ Item 12) |
 | F7 | Avaliação estática da posição |
@@ -150,12 +224,18 @@ formato nos dois modos.
 
 ## Checklist do dia do torneio
 
-1. Notebook **na tomada**, modo de energia **desempenho**, outros programas fechados.
-2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM".
-3. Abra `python tui.py` (ou o modo texto, `python main.py`) e informe:
-   - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; Armageddon = opção 3, que já
-     ajusta o contempt sozinho: com Brancas evita o empate, com Pretas busca, pois o empate
-     classifica as Pretas — FAQ Item 12);
+1. O notebook mais rápido da equipe (`python tools/bench_stockfish.py`), **na tomada**, modo de
+   energia **desempenho**, outros programas fechados.
+2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM", e o teste 12
+   tem que mostrar "Stockfish 19". Se aparecer o aviso de Stockfish não encontrado, rode
+   `python tools/baixar_stockfish.py` enquanto ainda há internet.
+3. Abra `python web.py` ou `python tui.py` (ou o modo texto, `python main.py`). A primeira linha
+   tem que ser "Motor do torneio pronto: Stockfish 19". Depois informe:
+   - motor **Stockfish** com desempenho **Ultra** (os padrões quando ele está instalado; confira
+     "Stockfish 19 (Ultra)" no topo da partida). O motor próprio fica de reserva;
+   - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; no Armageddon o empate classifica
+     as Pretas — FAQ Item 12. O motor próprio ajusta o contempt sozinho; o Stockfish não tem
+     contempt e avalia o empate como 0);
    - Pondering **ligado** (FAQ Item 13);
    - **segundos que o operador gasta por lance** (anunciar + mover a peça + apertar o
      relógio + digitar o lance adversário). Meçam no treino! O padrão é 4 s.
@@ -173,7 +253,7 @@ formato nos dois modos.
    - `fator 0.7` — pensar 30% menos. O desempate da Melhor de 3 é a soma do tempo restante
      nas três partidas (FAQ Item 12): em posição morta, `fator 0.5` guarda relógio e
      `fator 1` volta ao normal;
-   - `contempt 30` — evitar mais os empates contra adversário mais fraco.
+   - `contempt 30` — evitar mais os empates contra adversário mais fraco (só motor próprio).
 
 ---
 
@@ -181,17 +261,20 @@ formato nos dois modos.
 
 | Arquivo | Responsabilidade |
 | :--- | :--- |
-| `search.py` | Busca: Iterative Deepening, Aspiração, PVS, TT, Quiescência, SEE, podas e reduções, geração de lances em estágios, repetição, tablebases na busca |
+| `motor_stockfish.py` | Motor do torneio: abre o Stockfish por UCI, consulta o nosso livro e as tablebases primeiro e deixa o Stockfish pensar sem limite (`go infinite`); a cada profundidade concluída, a nossa gestão de tempo decide se continua ou para. Mesma interface do motor próprio, que fica de reserva |
+| `search.py` | Busca do motor próprio: Iterative Deepening, Aspiração, PVS, TT, Quiescência, SEE, podas e reduções, geração de lances em estágios, repetição, tablebases na busca |
 | `evaluation.py` | Avaliação: Tapered Eval (PeSTO), mobilidade, segurança do rei, estrutura de peões com cache, peões passados, conhecimento de finais, Mop-Up |
 | `time_manager.py` | Tempo: orçamento por lance com custo do operador, limites soft/hard, extensão por instabilidade e fail-low |
 | `book_and_tb.py` | Livro (trava de 10 meios-lances, FAQ Item 3) e Syzygy (até 5 peças, FAQ Item 4) |
 | `web.py`, `web/` | Interface no navegador: servidor local (biblioteca padrão) e página com tabuleiro clicável, placa de anúncio, relógios, súmula e os comandos da TUI |
 | `tui.py`, `tui.tcss` | Interface de torneio (TUI): placa de anúncio, lance adversário validado ao digitar, relógios, súmula e atalhos F1 a F9 |
-| `session.py` | Estado da partida usado pela TUI: a mesma lógica do `main.py` (relógio, log, ponder, contempt) e o salvamento para retomar |
+| `session.py` | Estado da partida usado pela TUI e pelo navegador: escolha do motor, a mesma lógica do `main.py` (relógio, log, ponder, contempt) e o salvamento para retomar |
 | `main.py` | Interface em modo texto (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |
 | `logger.py` | Log obrigatório da banca (FAQ Item 9) |
-| `uci.py` | Protocolo UCI (Arena, CuteChess, EnCroissant e `tools/match.py`) |
-| `tools/match.py` | Match automático entre duas versões do motor com Elo e intervalo de confiança |
+| `uci.py` | Protocolo UCI (Arena, CuteChess, EnCroissant, Lichess e `tools/match.py`); opções `Motor` (`Proprio` ou `Stockfish`) e `Desempenho` (`Baixo`, `Medio` ou `Ultra`) |
+| `tools/match.py` | Match automático entre dois motores com Elo e intervalo de confiança |
+| `tools/baixar_stockfish.py` | Download do Stockfish 19 oficial, com conferência do SHA-256 |
+| `tools/bench_stockfish.py` | Velocidade do Stockfish com a configuração do torneio, para escolher o notebook mais rápido |
 | `tools/baixar_syzygy.py` | Download das tablebases de 3-4-5 peças |
 | `tools/bench.py` | Benchmark de velocidade (rode no notebook do torneio) |
 | `tools/extrair_pgn.py`, `tools/gerar_dados.py`, `tools/texel.py` | Texel Tuning (experimental): dados rotulados e ajuste automático dos pesos. O resultado foi **rejeitado** no match (−150 Elo), então os pesos finais são os nossos ajustados à mão |
@@ -200,6 +283,46 @@ formato nos dois modos.
 ---
 
 ## Guia para a Arguição da Banca
+
+O motor do torneio é o Stockfish com a **nossa gestão de tempo**: as perguntas A a D são as
+principais. As seções 1 a 11 explicam o motor próprio (reserva), todo de autoria da equipe.
+
+### A. "O que é de vocês, se o Stockfish faz a busca e a avaliação?"
+O FAQ permite usar o Stockfish, desde que declarado (Item 1), e exige ao menos um componente
+decisório próprio (Item 2). O nosso é a **gestão de tempo** (`time_manager.py`). O Stockfish roda
+em `go infinite`, ou seja, ele não decide quando parar: quanto pensar em cada lance e quando parar
+é decisão do nosso código, com as mesmas regras do motor próprio. Também são nossos o livro de
+aberturas consultado antes do Stockfish, as interfaces de torneio, o log da banca e o motor
+reserva inteiro (avaliação, busca e tempo).
+
+### B. "Como a gestão de tempo controla o Stockfish?"
+O `motor_stockfish.py` abre o Stockfish por UCI e lê as linhas de informação que ele envia:
+
+1. Antes de começar, `allocate_time` calcula o tempo-alvo e o limite rígido do lance (fórmula
+   da seção 6, com o custo do operador).
+2. A cada profundidade concluída: se o melhor lance mudou ou a nota caiu, o motor pensa mais
+   (`adjust_for_instability`); se o lance está estável há várias profundidades, economiza.
+3. Se o Stockfish informa que a raiz falhou baixo (linha `upperbound`), `notify_fail_low` dá mais
+   tempo ao lance.
+4. Uma nova profundidade só é esperada se houver tempo provável para terminá-la
+   (`should_stop_iteration`). O limite rígido manda parar na hora (`should_abort_search`), e o
+   Stockfish devolve o melhor lance que tem.
+5. Mate forçado confirmado: para sem gastar o resto do tempo.
+
+### C. "Por que a gestão de tempo importa contra outro Stockfish?"
+Entre dois Stockfish a maioria das partidas empata. Com o confronto empatado, o FAQ (Item 12)
+desempata pela **soma do tempo restante** nas três partidas. A nossa gestão de tempo foi feita
+para a mesa: desconta o tempo do operador em cada lance, economiza quando o lance está estável e
+tem o modo economia (F6) para guardar relógio em posição morta. No teste com o mesmo Stockfish
+dos dois lados, foram 12 empates em 12 partidas, e a nossa gestão de tempo gastou 34% menos tempo
+por lance: o nosso relógio nunca ficou abaixo de 19 s, e o da gestão de tempo do Stockfish chegou
+a 1,5 s.
+
+### D. "E a licença do Stockfish?"
+GPLv3. Usamos o programa oficial sem alterar o código: ele roda como processo separado e conversa
+por UCI. O executável não está no repositório; é baixado por `tools/baixar_stockfish.py` da
+versão oficial `sf_19`, com conferência do SHA-256. A rede neural embutida nele é peso de
+terceiros (Item 15) e está declarada.
 
 ### 1. "Como funciona a busca?"
 **Iterative Deepening + Negamax Alpha-Beta com PVS.** Buscamos profundidade 1, 2, 3...
@@ -335,4 +458,11 @@ python tools/match.py --a "python uci.py" --a-name NOVO --a-opt Log=false \
 
 # Simular o operador humano (desconta 0,8 s extra por lance) em ritmo reduzido 3+2
 python tools/match.py ... --tc 180+2 --overhead 0.8 --a-opt "Move Overhead=800"
+
+# Nossa gestão de tempo x a do próprio Stockfish (o mesmo Stockfish dos dois lados)
+python tools/match.py --a "python uci.py" --a-name NOSSO_TEMPO --a-opt Motor=Stockfish \
+                      --a-opt "Move Overhead=160" --a-opt Log=false --a-opt OwnBook=false \
+                      --b ../stockfish/stockfish/stockfish-linux-x86-64-universal --b-name SF_PURO \
+                      --b-opt Threads=4 --b-opt "Move Overhead=160" \
+                      --games 12 --tc 40+0.4 --overhead 0.16 --concurrency 1
 ```
