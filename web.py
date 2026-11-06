@@ -43,6 +43,7 @@ from motor_stockfish import (
     recursos_do_nivel,
     verificar_stockfish,
 )
+from recuperacao import resumo_da_partida
 from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva, ler_relogio
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -331,9 +332,9 @@ class Controlador:
             self._entrar_turno(auto=False)
             self.pedir_relogio = self.versao
             self._avisar("Partida retomada. Confira os relógios físicos.", "info", "Retomar")
-            aviso = sessao.tomar_aviso()
+            aviso = sessao.tomar_aviso()  # motor reserva e o que conferir na recuperação
             if aviso:
-                self._avisar(aviso, "erro", "Motor reserva")
+                self._avisar(aviso, "erro", "Atenção")
         return {"ok": True}
 
     def ler(self, dados: dict) -> dict:
@@ -624,12 +625,8 @@ class Controlador:
             return e
 
     def _resumo_salvo(self) -> str | None:
-        dados = ler_partida_salva()
-        if not dados:
-            return None
-        cor = COR_PT[dados["config"]["our_color"] == "w"]
-        return (f"Há uma partida salva: jogando de {cor}, {len(dados['lances'])} meios-lances, "
-                f"salva às {dados['salvo_em']}.")
+        dados = ler_partida_salva()  # pelo arquivo salvo ou remontada pelo log da banca (recuperacao.py)
+        return resumo_da_partida(dados) if dados else None
 
     def _pensando(self) -> dict:
         tm = self.sessao.time_manager

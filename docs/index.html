@@ -394,11 +394,26 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <code>Threads</code>, <code>Hash</code>, <code>Move Overhead</code>, <code>OwnBook</code>, <code>Ponder</code>,
     <code>Contempt</code>, <code>SyzygyPath</code> e <code>Log</code>.</p>
 
-  <h3>Salvamento e retomada</h3>
+  <h3>Salvamento e retomada (se o notebook travar ou desligar)</h3>
   <p>A cada lance, a partida é gravada em <code>logs/partida_em_andamento.json</code> (cor, ritmo, lances,
-    relógios, ajustes e o caminho do log). Ao abrir a interface de novo, aparece <strong>Retomar partida</strong>:
+    relógios, ajustes e o caminho do log). Ao abrir qualquer interface de novo, aparece <strong>Retomar partida</strong>:
     ela reconstrói a posição, continua o mesmo log e pede para conferir os relógios. Começar uma partida
     nova guarda a anterior em <code>partida_salva_anterior.json</code> em vez de apagar.</p>
+  <p>A recuperação é a mesma função nas três interfaces (<code>recuperacao.py</code>), e uma retoma a partida
+    da outra, inclusive o modo texto.</p>
+  <ul>
+    <li><strong>Direto no disco:</strong> o arquivo salvo e o log da banca são gravados com <code>fsync</code>. O lance
+      que aparece na tela já está gravado, mesmo que a energia caia logo depois.</li>
+    <li><strong>O log é a reserva:</strong> ele é gravado antes do arquivo salvo. Se o arquivo salvo faltar, estiver
+      corrompido ou atrasado, a partida é remontada linha por linha pelo log da banca.</li>
+    <li><strong>O que o log refaz:</strong> lances, desfazer, FEN, lances forçados, relógio sincronizado, operador,
+      fator de tempo, contempt e pondering. O ritmo e o motor vêm da linha “Configuração da partida”.</li>
+    <li><strong>Linha cortada:</strong> a linha que a queda cortou no meio é ignorada.</li>
+    <li><strong>Partida terminada</strong> não é oferecida.</li>
+  </ul>
+  <p>Sem abrir interface: <code>python recuperacao.py</code> mostra a partida, <code>--listar</code> lista os logs,
+    <code>--log ARQUIVO --restaurar</code> deixa a partida de um log pronta para retomar (até a cópia de outro
+    notebook) e <code>--pgn</code> mostra o PGN.</p>
 </section>
 
 <!-- ================================================================ -->
@@ -479,12 +494,13 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <tr><td><code>time_manager.py</code></td><td>Gestão de tempo dos dois motores: orçamento por lance com o custo do operador, limites flexível e rígido, extensão por instabilidade.</td></tr>
     <tr><td><code>book_and_tb.py</code></td><td>Livro (trava de 10 meios-lances) e Syzygy (até 5 peças).</td></tr>
     <tr><td><code>session.py</code></td><td>Partida das interfaces: cria o motor escolhido, registra lances, relógio, log, pondering, desfazer, posição, salvamento e retomada.</td></tr>
+    <tr><td><code>recuperacao.py</code></td><td>Recuperação da partida interrompida para as três interfaces: arquivo salvo conferido com o log da banca, ou a partida remontada pelo log. Também funciona pela linha de comando.</td></tr>
     <tr><td><code>web.py</code>, <code>web/</code></td><td>Interface no navegador: servidor local (biblioteca padrão) e a página.</td></tr>
     <tr><td><code>tui.py</code>, <code>tui.tcss</code></td><td>Interface no terminal (Textual).</td></tr>
-    <tr><td><code>main.py</code></td><td>Modo texto, pondering, lance de emergência e regras de fim de partida usadas por todos.</td></tr>
-    <tr><td><code>logger.py</code></td><td>Log obrigatório da banca (FAQ item 9).</td></tr>
+    <tr><td><code>main.py</code></td><td>Modo texto, pondering, lance de emergência, retomada e regras de fim de partida usadas por todos.</td></tr>
+    <tr><td><code>logger.py</code></td><td>Log obrigatório da banca (FAQ item 9), gravado direto no disco.</td></tr>
     <tr><td><code>uci.py</code></td><td>Protocolo UCI, com a opção <code>Motor</code> (próprio ou Stockfish).</td></tr>
-    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (14 testes: o 12º com o Stockfish, o 13º com a leitura do lance digitado e o 14º com a recalibração do operador).</td></tr>
+    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (19 testes: o 12º com o Stockfish, o 13º com a leitura do lance digitado, o 14º com a recalibração do operador, do 15º ao 18º a gestão de tempo do desempate e o Armageddon, e o 19º com a recuperação da partida se o notebook travar ou desligar).</td></tr>
     <tr><td><code>tools/</code></td><td><code>match.py</code> (motor contra motor, com Elo), <code>simular_torneio.py</code> (partidas pela mesma sessão das interfaces, com relógio físico e operador simulados), <code>baixar_stockfish.py</code>, <code>bench_stockfish.py</code> (escolher o notebook), <code>baixar_syzygy.py</code>, <code>bench.py</code> e os scripts de Texel Tuning.</td></tr>
   </table>
 

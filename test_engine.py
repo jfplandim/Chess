@@ -638,6 +638,171 @@ def run_all_tests() -> None:
          sessao_mod.avisos_de_energia) = salvos
         shutil.rmtree(pasta, ignore_errors=True)
 
+    # 19. Recuperação da partida: o notebook travou ou desligou no meio do jogo
+    print("\n[TESTE 19] Recuperação da partida pelo arquivo salvo e pelo log da banca (travou, desligou)...")
+    import contextlib
+    import io
+    import json
+
+    import recuperacao as rec
+
+    pasta = tempfile.mkdtemp(prefix="teste_recuperacao_")
+    salvos = (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger)
+    sessao_mod.LOGS_DIR = logs = os.path.join(pasta, "logs")  # não mexe na partida salva de verdade (logs/)
+    sessao_mod.ARQUIVO_SALVO = arq = os.path.join(logs, "partida_em_andamento.json")
+    sessao_mod.ARQUIVO_SALVO_ANTERIOR = os.path.join(logs, "partida_salva_anterior.json")
+    sessao_mod.MatchLogger = functools.partial(MatchLogger, base_dir=pasta)
+    try:
+        rng = random.Random(19)
+
+        def vez(s, fonte="SEARCH"):
+            """Um meio-lance de quem tiver a vez (sem capturas, para a partida não acabar cedo)."""
+            quietos = [m for m in s.board.legal_moves if not s.board.is_capture(m)] or list(s.board.legal_moves)
+            m = rng.choice(quietos)
+            if s.nossa_vez:
+                s.registrar_nosso(SearchResult(m, rng.randint(-50, 50), 12, 5000, 0.0, [m.uci()], fonte, 14, [m]))
+            else:
+                s.registrar_adversario(m)
+
+        def recuperada():
+            d = sessao_mod.ler_partida_salva()
+            assert d is not None, "Devia haver partida para retomar"
+            return d
+
+        def lances_de(s):
+            return [m.uci() for m in s.board.move_stack]
+
+        s = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.BLACK, ritmo="personalizado", minutos=10,
+                                                     incremento=5, motor="proprio", operador=3.0, ponder=False))
+        for _ in range(12):
+            vez(s)
+        s.sincronizar(s.relogios()[0] - 6.0, 590.0)  # operador 1 s mais lento em 6 lances: recalibra 3 -> 4 s
+        assert abs(s.time_manager.operator_overhead - 4.0) < 1e-9
+        for _ in range(4):
+            vez(s)
+        s.ajustar(operador=3.5, contempt=20)
+        s.alternar_economia()
+        vez(s)
+        s.registrar_manual(rng.choice(list(s.board.legal_moves)))
+        vez(s)
+        vez(s, "BOOK")
+        s.desfazer(2)
+        for _ in range(3):
+            vez(s)
+        nosso, adv = s.time_manager.remaining_time, s.time_manager.opponent_time
+
+        # a) Arquivo salvo inteiro: bate com o log e vale ele
+        d = recuperada()
+        assert d["fonte"] == "salvo" and d["lances"] == lances_de(s) and not d["avisos"], d["avisos"]
+        # b) Só pelo log: a mesma partida, a mesma súmula e os mesmos ajustes
+        so_log = rec.remontar(rec.ler_log(s.logger.log_path))
+        assert (so_log["fen_inicial"], so_log["lances"]) == (s.fen_inicial, lances_de(s))
+        assert so_log["config"] == d["config"], (so_log["config"], d["config"])
+        assert abs(so_log["relogio_nosso"] - nosso) < 0.5 and abs(so_log["relogio_adv"] - adv) < 0.5
+        assert (so_log["operador"], so_log["operador_inicial"], so_log["contempt"]) == (3.5, 3.5, 20)
+        assert (so_log["fator"], so_log["fator_antes_economia"], so_log["ponder"]) == (0.5, 1.0, False)
+        campos = ("uci", "san", "descricao", "cor", "nosso", "origem", "profundidade", "avaliacao")
+        assert [[h[c] for c in campos] for h in so_log["historico"]] == [[h[c] for c in campos] for h in d["historico"]]
+        assert any(h["origem"] == "MANUAL" for h in so_log["historico"])
+        # c) Arquivo salvo corrompido (a energia caiu no meio da gravação): remonta pelo log
+        with open(arq, "w", encoding="utf-8") as f:
+            f.write('{"versao": 1, "config": {"our_')
+        d = recuperada()
+        assert d["fonte"] == "log" and d["lances"] == lances_de(s) and "corrompido" in d["avisos"][0], d["avisos"]
+        # d) Arquivo salvo apagado
+        os.remove(arq)
+        d = recuperada()
+        assert d["fonte"] == "log" and d["lances"] == lances_de(s) and not d["avisos"], d["avisos"]
+        # e) Arquivo salvo atrasado (a energia caiu entre a gravação do log e a dele): vale o log, gravado antes
+        s.salvar()
+        with open(arq, encoding="utf-8") as f:
+            atrasado = json.load(f)
+        vez(s)
+        vez(s)
+        rec.gravar_json(arq, atrasado)
+        d = recuperada()
+        assert d["fonte"] == "log" and d["lances"] == lances_de(s) and "atrasado" in d["avisos"][0], d["avisos"]
+        # f) Última linha do log cortada no meio: não vale (o lance talvez nem tenha aparecido na tela)
+        with open(s.logger.log_path, "a", encoding="utf-8") as f:
+            f.write("99   | BRANCAS | e2e4        | 30     | 1000           | +10 cp (+0.10)   |  1.000s | e2")
+        d = recuperada()
+        assert d["lances"] == lances_de(s) and any("pela metade" in a for a in d["avisos"]), d["avisos"]
+        # g) Retomar pelo log e seguir: o log continua no mesmo arquivo e uma segunda queda também se recupera
+        s.parar()
+        s2 = sessao_mod.GameSession.retomar(d)
+        assert lances_de(s2) == lances_de(s) and s2.logger.log_path == s.logger.log_path and len(s2.lances) == len(d["lances"])
+        assert (s2.time_manager.operator_overhead, s2.engine.contempt, s2.fator_antes_economia) == (3.5, 20, 1.0)
+        assert s2.aviso and "pela metade" in s2.aviso
+        vez(s2)
+        vez(s2)
+        os.remove(arq)
+        d = recuperada()
+        assert d["lances"] == lances_de(s2) and not d["avisos"], d["avisos"]
+        n_lances = len(d["lances"])
+        # h) Partida terminada não é oferecida; desfazer depois do fim volta a oferecer
+        s3 = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.WHITE, motor="proprio", ponder=False))
+        for uci in ("f2f3", "e7e5", "g2g4", "d8h4"):  # mate do louco
+            m = chess.Move.from_uci(uci)
+            s3.registrar_manual(m) if s3.nossa_vez else s3.registrar_adversario(m)
+        assert s3.encerrada and sessao_mod.ler_partida_salva() is None
+        os.remove(arq)
+        assert sessao_mod.ler_partida_salva() is None, "Pelo log também: foi xeque-mate"
+        s3.desfazer(1)
+        assert recuperada()["lances"] == ["f2f3", "e7e5", "g2g4"]
+        s3.declarar_resultado("derrota")
+        os.remove(arq)
+        assert sessao_mod.ler_partida_salva() is None, "Resultado declarado pelo árbitro: não há o que retomar"
+        # i) Log do modo texto (main.py): lance forçado, desfazer depois do fim, relógio do adversário
+        cabecalho = "Data/Hora de Início : 06/11/2026 10:00:00\nCor da Equipe       : {}\n"
+        log_cli = os.path.join(logs, "partida_20991231_235958.log")
+        with open(log_cli, "w", encoding="utf-8") as f:
+            f.write(cabecalho.format("PRETAS") + "\n".join([
+                "# [10:00:00] EVENTO: Motor: Motor próprio da equipe (avaliação, busca e gestão de tempo)",
+                "# [10:00:00] EVENTO: " + rec.evento_configuracao(sessao_mod.Config(motor="proprio")),
+                "1    | BRANCAS | e2e4        | -      | -              | (Adversário)     |  5.000s | Lance adversário anunciado: e2e4",
+                "1    | PRETAS  | e7e5        | 12     | 1000           | +10 cp (+0.10)   |  2.000s | e7e5 g1f3",
+                "# [10:00:10] EVENTO: Lance forçado manualmente: g1f3",
+                "# [10:00:11] EVENTO: UNDO executado. Lances revertidos: g1f3",
+                "2    | BRANCAS | f1c4        | -      | -              | (Adversário)     |  3.000s | Lance adversário anunciado: f1c4",
+                "2    | PRETAS  | b8c6        | 1      | 1              | +MATE em 3 (+29995) |  1.500s | [BOOK] b8c6",
+                "# [10:00:20] EVENTO: Relógio sincronizado para 880.0s (adversário 870.5s)",
+                "# [10:00:20] EVENTO: Pondering desativado",
+                "3    | BRANCAS | d1h5        | -      | -              | (Adversário)     |  4.000s | Lance adversário anunciado: d1h5",
+                "3    | PRETAS  | g8f6        | 9      | 800            | -250 cp (-2.50)  |  1.000s | g8f6 h5f7",
+                "4    | BRANCAS | h5f7        | -      | -              | (Adversário)     |  2.000s | Lance adversário anunciado: h5f7",
+                "# [10:00:30] EVENTO: Fim da partida: 1-0 (CHECKMATE)",
+                "# [10:00:31] EVENTO: Comando UNDO executado após fim de jogo.",
+            ]) + "\n")
+        d = recuperada()
+        assert d["fonte"] == "log" and d["config"]["our_color"] == "b" and not d["encerrada"]
+        assert d["lances"] == ["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6"], d["lances"]
+        assert d["ponder"] is False and (d["historico"][3]["origem"], d["historico"][3]["avaliacao"]) == ("BOOK", 29995)
+        assert (round(d["relogio_nosso"], 3), round(d["relogio_adv"], 3)) == (885.0, 884.5), (d["relogio_nosso"], d["relogio_adv"])
+        # j) Log do modo UCI não é partida de torneio (o lance do adversário não vai para ele)
+        with open(os.path.join(logs, "partida_20991231_235959.log"), "w", encoding="utf-8") as f:
+            f.write(cabecalho.format("UCI_MODE") + "1    | BRANCAS | d2d4        | 20     | 5000           | +20 cp (+0.20)   |  1.000s | d2d4\n")
+        assert recuperada()["log_path"] == log_cli
+        # k) Linha de comando: remonta um log copiado de outro notebook e deixa pronto para as interfaces
+        fora = os.path.join(pasta, "pendrive")
+        os.makedirs(fora)
+        shutil.copyfile(s2.logger.log_path, os.path.join(fora, "partida_copiada.log"))
+        saida = io.StringIO()
+        with contextlib.redirect_stdout(saida):
+            assert rec.main(["--log", os.path.join(fora, "partida_copiada.log"), "--pgn"]) == 0
+        assert "Partida interrompida encontrada" in saida.getvalue() and '[Result "*"]' in saida.getvalue()
+        estado = rec.remontar(rec.ler_log(os.path.join(fora, "partida_copiada.log")))
+        rec.restaurar(estado, arq, logs)
+        d = recuperada()
+        assert d["fonte"] == "salvo" and len(d["lances"]) == n_lances and d["log_path"] == os.path.join(logs, "partida_copiada.log")
+        s4 = sessao_mod.GameSession.retomar(d)
+        assert len(s4.board.move_stack) == n_lances and s4.engine.contempt == 20
+        print(f"  -> [OK] Arquivo salvo corrompido, apagado ou atrasado: partida remontada pelo log ({n_lances} "
+              "meios-lances, ajustes e relógio); linha cortada ignorada; terminada não é oferecida; log do modo "
+              "texto e cópia de outro notebook retomados")
+    finally:
+        (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger) = salvos
+        shutil.rmtree(pasta, ignore_errors=True)
+
     print("\n======================================================================")
     print(f"   TODOS OS TESTES PASSARAM ({time.time() - t_start:.0f}s). MOTOR PRONTO PARA O TORNEIO!")
     print("======================================================================")

@@ -15,6 +15,34 @@ import chess
 from evaluation import MATE_THRESHOLD, MATE_SCORE
 
 
+def forcar_disco(arquivo) -> None:
+    """
+    fsync: só volta depois que os dados estão no disco, não só na memória do sistema. Se o notebook
+    travar ou a energia cair logo depois, o que foi gravado continua lá (recuperacao.py usa isso).
+    """
+    try:
+        arquivo.flush()
+        os.fsync(arquivo.fileno())
+    except (OSError, ValueError):  # sistema de arquivos sem fsync: fica a gravação normal
+        pass
+
+
+def forcar_pasta(pasta: str) -> None:
+    """Grava no disco a entrada de um arquivo novo ou renomeado na pasta. No Windows não precisa (nem dá)."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(pasta, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 class MatchLogger:
     def __init__(self, base_dir: str | None = None, team_color: str = "BRANCAS"):
         if base_dir is None:
@@ -34,11 +62,19 @@ class MatchLogger:
         self._write_header(team_color)
 
     def _write_both(self, text: str, mode: str = "a") -> None:
-        """Grava simultaneamente no arquivo .log com timestamp e no espelho .txt para entrega rápida."""
+        """
+        Grava simultaneamente no arquivo .log com timestamp e no espelho .txt para entrega rápida.
+        O .log vai direto para o disco (fsync): é por ele que a partida é remontada se o notebook
+        travar ou desligar (recuperacao.py). Custa alguns milissegundos por lance.
+        """
         for path in (self.log_path, self.txt_mirror_path):
             with open(path, mode, encoding="utf-8") as f:
                 f.write(text)
                 f.flush()
+                if path == self.log_path:
+                    forcar_disco(f)
+        if mode == "w":
+            forcar_pasta(self.logs_dir)  # log novo: a entrada dele na pasta também
 
     def _write_header(self, team_color: str) -> None:
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")

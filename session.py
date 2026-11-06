@@ -5,13 +5,13 @@ Chess Challenge III - ICEV 2026
 Guarda o estado de uma partida e aplica o protocolo do FAQ Item 10 com a mesma lógica do
 main.py: relógio interno com o custo do operador, log obrigatório da banca (FAQ Item 9),
 pondering e contempt do Armageddon. Aqui não há entrada nem saída de texto: a interface
-chama os métodos. A partida é salva a cada lance em logs/partida_em_andamento.json para
-poder ser retomada se o notebook travar ou a janela fechar.
+chama os métodos. A partida é salva a cada lance em logs/partida_em_andamento.json (direto
+no disco) para poder ser retomada se o notebook travar, desligar ou a janela fechar; se esse
+arquivo se perder, ela é remontada pelo log da banca (recuperacao.py).
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -23,7 +23,7 @@ from datetime import datetime
 import chess
 
 from evaluation import evaluate_board
-from logger import MatchLogger
+from logger import MatchLogger, forcar_disco
 from main import (
     ARMAGEDDON_CONTEMPT,
     PIECE_NAMES_PT,
@@ -42,14 +42,19 @@ from motor_stockfish import (
     descrever_motor,
     motor_padrao,
 )
+from recuperacao import (  # os mesmos arquivos para as três interfaces (os testes trocam os caminhos daqui)
+    ARQUIVO_SALVO,
+    ARQUIVO_SALVO_ANTERIOR,
+    EVENTO_LINHA_CORTADA,
+    LOGS_DIR,
+    VERSAO_SALVO,
+    achar_log,
+    evento_configuracao,
+    gravar_json,
+    recuperar_partida,
+)
 from search import SearchResult
 from time_manager import TimeManager, ler_relogio  # noqa: F401 - ler_relogio: usado pelas interfaces
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-ARQUIVO_SALVO = os.path.join(LOGS_DIR, "partida_em_andamento.json")
-ARQUIVO_SALVO_ANTERIOR = os.path.join(LOGS_DIR, "partida_salva_anterior.json")
-VERSAO_SALVO = 1
 
 COR_PT = {chess.WHITE: "Brancas", chess.BLACK: "Pretas"}
 LANCES_PARA_LEMBRAR_RELOGIO = 15  # lances nossos sem F3 até a tela lembrar de sincronizar
@@ -310,22 +315,39 @@ class LogRetomado(MatchLogger):
         self.logs_dir = os.path.dirname(log_path)
         self.log_path = log_path
         self.txt_mirror_path = os.path.join(self.logs_dir, "ultima_partida_banca.txt")
+        self._fechar_linha_cortada()
         try:
             shutil.copyfile(log_path, self.txt_mirror_path)  # o espelho volta a ser desta partida
         except OSError:
             pass
 
+    def _fechar_linha_cortada(self) -> None:
+        """
+        Se a energia caiu no meio de uma linha, o log termina sem a quebra de linha e a próxima gravação
+        emendaria nela. Fecha a linha e anota que ela não vale: a recuperação a descarta (recuperacao.py),
+        e o log continua só crescendo, sem apagar nada.
+        """
+        try:
+            with open(self.log_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                if f.tell() == 0:
+                    return
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) == b"\n":
+                    return
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# [{datetime.now():%H:%M:%S}] EVENTO: {EVENTO_LINHA_CORTADA}\n")
+                forcar_disco(f)
+        except OSError:
+            pass
+
 
 def ler_partida_salva() -> dict | None:
-    """Partida salva e ainda não encerrada, ou None."""
-    try:
-        with open(ARQUIVO_SALVO, encoding="utf-8") as f:
-            dados = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if dados.get("versao") != VERSAO_SALVO or dados.get("encerrada"):
-        return None
-    return dados
+    """
+    Partida interrompida para retomar, ou None: o arquivo salvo conferido com o log da banca ou, se ele
+    faltar, estiver corrompido ou atrasado, a partida remontada pelo log (recuperacao.py).
+    """
+    return recuperar_partida(ARQUIVO_SALVO, LOGS_DIR)
 
 
 def arquivar_partida_salva() -> None:
@@ -383,6 +405,7 @@ class GameSession:
         if logger is None:
             logger = MatchLogger(team_color=COR_PT[self.our_color].upper())
             logger.log_event(f"Motor: {descrever_motor(self.engine)}")
+            logger.log_event(evento_configuracao(config))  # com ela, o log sozinho basta para retomar a partida
             if config.ritmo == "armageddon" and self.usa_stockfish:
                 logger.log_event(f"Armageddon: empate classifica as Pretas (FAQ Item 12). {self.descricao_regra_empate()}")
             elif config.ritmo == "armageddon":
@@ -865,24 +888,27 @@ class GameSession:
         }
 
     def salvar(self) -> None:
-        """Grava a partida a cada mudança. Falhar aqui nunca pode atrapalhar o jogo."""
+        """
+        Grava a partida a cada mudança, já no disco (troca atômica com fsync, recuperacao.py): se a energia
+        cair, fica a gravação anterior inteira ou a nova inteira. Falhar aqui nunca pode atrapalhar o jogo.
+        """
         try:
-            os.makedirs(LOGS_DIR, exist_ok=True)
-            tmp = ARQUIVO_SALVO + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.para_dict(), f, ensure_ascii=False, indent=1)
-            os.replace(tmp, ARQUIVO_SALVO)
-        except OSError:
+            gravar_json(ARQUIVO_SALVO, self.para_dict())
+        except (OSError, TypeError, ValueError):
             pass
 
     @classmethod
     def retomar(cls, dados: dict) -> "GameSession":
-        cfg = dict(dados["config"])
+        """
+        Retoma a partida que recuperar_partida() devolve (pelo arquivo salvo ou remontada pelo log da banca),
+        continuando o mesmo log. Qualquer interface retoma a partida de qualquer outra.
+        """
+        cfg = {campo: valor for campo, valor in dados["config"].items() if campo in Config.__dataclass_fields__}
         cfg["our_color"] = cfg["our_color"] == "w"
         cfg.setdefault("motor", "proprio")  # partidas salvas antes do Stockfish foram jogadas pelo motor próprio
         cfg.setdefault("desempenho", "ultra")
-        log_path = dados.get("log_path")
-        logger = LogRetomado(log_path) if log_path and os.path.exists(log_path) else None
+        log_path = achar_log(dados.get("log_path"), LOGS_DIR)  # o mesmo nome em logs/ se a pasta mudou de lugar
+        logger = LogRetomado(log_path) if log_path else None
         try:
             sessao = cls(Config(**cfg), logger=logger)
         except MotorIndisponivel as erro:
@@ -896,19 +922,27 @@ class GameSession:
             board.push_uci(uci)
         sessao.board = board
         sessao.fen_inicial = dados["fen_inicial"]
-        sessao.lances = [Lance(**item) for item in dados.get("historico", [])]
+        sessao.lances = [Lance(**{campo: item[campo] for campo in Lance.__dataclass_fields__})
+                         for item in dados.get("historico", [])]
         sessao.time_manager.operator_overhead = dados["operador"]
         sessao.time_manager.time_factor = dados["fator"]
         sessao.fator_antes_economia = dados.get("fator_antes_economia")
-        sessao.engine.contempt = dados["contempt"]
+        if dados.get("contempt") is not None:  # remontada por log sem ajuste de contempt: fica o padrão do motor
+            sessao.engine.contempt = dados["contempt"]
         sessao.use_ponder = dados["ponder"]
         sessao.time_manager.sync_clocks(dados["relogio_nosso"], dados["relogio_adv"])
         sessao.operador_inicial = dados.get("operador_inicial", dados["operador"])
         sessao.calibracao_valida = False  # o tempo com a interface fechada não é custo do operador
         sessao.inicio_turno = time.perf_counter()
+        fonte = " pelo log da banca" if dados.get("fonte") == "log" else ""
         sessao.logger.log_event(
-            f"Partida retomada pela interface: {len(dados['lances'])} meios-lances, "
-            f"relógio {dados['relogio_nosso']:.1f}s. Motor: {descrever_motor(sessao.engine)}"
+            f"Partida retomada{fonte}: {len(dados['lances'])} meios-lances, relógio {dados['relogio_nosso']:.1f}s "
+            f"(adversário {dados['relogio_adv']:.1f}s). Motor: {descrever_motor(sessao.engine)}"
         )
+        avisos = dados.get("avisos") or []
+        for aviso in avisos:
+            sessao.logger.log_event(f"Recuperação: {aviso}")
+        if avisos:  # a interface mostra junto com o aviso do motor reserva, se houver
+            sessao.aviso = " ".join(([sessao.aviso] if sessao.aviso else []) + avisos)
         sessao.salvar()
         return sessao
