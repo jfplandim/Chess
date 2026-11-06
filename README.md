@@ -150,11 +150,13 @@ Sem a pasta `syzygy/` os dois motores funcionam normalmente (só não usam as ta
 ```bash
 python test_engine.py
 ```
-São 14 testes:
+São 19 testes:
 - **12º:** o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas, lances legais,
   pondering e o que acontece se o processo cair ou travar no meio da busca.
 - **13º:** a leitura do lance digitado pelo operador.
 - **14º:** a recalibração do custo do operador pelo relógio físico.
+- **15º a 18º:** crédito do ponder, empate morto, regra do empate imediato e Armageddon com incremento.
+- **19º:** a recuperação da partida se o notebook travar ou desligar (seção abaixo).
 
 ### 5. Partida oficial (100% offline)
 ```bash
@@ -177,7 +179,8 @@ navegador; o terminal só mostra a conferência do Stockfish e esse endereço. T
 - **A partida mora no `web.py`, não na aba:** fechar ou recarregar a página não perde nada;
   é só abrir o endereço de novo. O F5 desta página corrige a posição em vez de recarregar.
 - **Para desligar:** Encerrar > Sair e retomar depois, ou Ctrl+C no terminal. A partida fica
-  salva no mesmo arquivo da TUI: uma interface retoma a partida da outra.
+  salva no mesmo arquivo da TUI: uma interface retoma a partida da outra (inclusive o modo
+  texto, e mesmo depois de o notebook travar ou desligar: `recuperacao.py`).
 - **Mesmo motor e mesmo log:** a lógica está em `session.py`, compartilhada com a TUI. Com a
   página aberta, o motor rende cerca de 94% da velocidade sem ela (medido).
 - `python web.py --porta 9000` usa outra porta; `--sem-navegador` não abre o navegador sozinho.
@@ -223,10 +226,58 @@ Feita para a mesa do torneio: o operador não digita comandos, só o lance do ad
 | Ctrl+Q | Encerra: resultado declarado pelo árbitro, ou sair e retomar depois |
 
 O rodapé aceita clique, útil se o terminal capturar alguma tecla F (o GNOME Terminal usa o
-F1). A partida é salva a cada lance em `logs/partida_em_andamento.json`: se o notebook
-travar, rode `python tui.py` de novo e escolha **Retomar partida**; o log continua no mesmo
-arquivo. Maximize o terminal (o ideal é pelo menos 120 × 36). O log da banca tem o mesmo
-formato nos dois modos.
+F1). Se o notebook travar ou desligar, veja a seção abaixo. Maximize o terminal (o ideal é
+pelo menos 120 × 36). O log da banca tem o mesmo formato nos dois modos.
+
+---
+
+## Se o notebook travar ou desligar no meio da partida (`recuperacao.py`)
+
+Abra a interface de novo (`python web.py`, `python tui.py` ou `python main.py`). A tela inicial
+mostra a partida interrompida, com a nossa cor, quantos meios-lances, o último lance e de quem
+ele foi. Escolha **Retomar partida** (no modo texto, Enter em "Retomar esta partida?").
+
+1. **Confira os relógios.** A interface pede o que o relógio físico mostra agora. O tempo em
+   que o programa ficou fechado não está em arquivo nenhum.
+2. **Confira o tabuleiro.** Se o último lance foi nosso e ainda não foi anunciado, anuncie
+   agora. O tabuleiro físico é a fonte da verdade (FAQ Item 10). Se algo não bater, corrija a
+   posição: F5 na interface ou `fen` no modo texto.
+
+Como funciona: é a mesma função, `recuperar_partida()`, nas três interfaces, e uma retoma a
+partida da outra. Ela tem duas fontes. As duas são gravadas a cada lance com `fsync`, então o
+lance que aparece na tela já está no disco, mesmo que a energia caia logo depois.
+
+- **O arquivo salvo** `logs/partida_em_andamento.json` traz configuração, relógios e súmula.
+  - A gravação é uma troca atômica.
+  - Se a energia cair no meio, fica a gravação anterior inteira ou a nova inteira.
+- **O log da banca** (`logs/partida_*.log`) é gravado antes do arquivo salvo, então nunca fica
+  atrás dele. Se o arquivo salvo faltar, estiver corrompido ou atrasado, a partida é remontada
+  linha por linha pelo log, com:
+  - lances nossos e do adversário, desfazer, posição por FEN e lances forçados;
+  - relógio sincronizado, custo do operador, fator de tempo, contempt e pondering;
+  - o ritmo e o motor, da linha "Configuração da partida" que o log ganha no início;
+  - os relógios refeitos com a mesma conta da gestão de tempo.
+- **Uma linha cortada pela queda** (sem o fim de linha) é ignorada. Era um lance que talvez
+  nem tenha aparecido na tela: o operador digita o do adversário de novo, ou o motor pensa de novo.
+- **Partida terminada não é oferecida:** mate, empate ou resultado declarado pelo árbitro.
+  - No modo texto, `sair` pergunta se o árbitro deu resultado (`v`, `d`, `e`) ou se é para
+    retomar depois (`r`).
+
+Sem abrir interface nenhuma:
+
+```bash
+python recuperacao.py                    # a partida que as interfaces vão oferecer para retomar
+python recuperacao.py --listar           # os logs de logs/ e como terminou cada partida
+python recuperacao.py --log ARQUIVO      # remonta a partida de um log (até de uma cópia de outro notebook)
+python recuperacao.py --log ARQUIVO --restaurar   # e deixa essa partida pronta para as interfaces retomarem
+python recuperacao.py --pgn              # mostra também o PGN, para conferir com o árbitro
+```
+
+O `--restaurar` serve, por exemplo, para quem começou uma partida nova por engano depois de
+religar o notebook. Com um log de fora da pasta `logs/` (pen drive), ele copia o log para lá e
+continua a cópia; o original fica intacto. O teste 19 do `test_engine.py` simula as quedas: o
+arquivo salvo corrompido, apagado ou atrasado, a linha cortada, a retomada seguida de uma
+segunda queda, o log do modo texto e o de outro notebook.
 
 ---
 
@@ -269,7 +320,8 @@ formato nos dois modos.
      150 lances de 15+10 mostra o risco: com o operador 2 s mais lento que o configurado, ele perde
      por tempo perto do lance 60.
 5. O log exigido pelo FAQ Item 9 é gravado a cada lance em `logs/partida_*.log`
-   e espelhado em `logs/ultima_partida_banca.txt`.
+   e espelhado em `logs/ultima_partida_banca.txt`. Se o notebook travar ou desligar, abra a
+   interface de novo e escolha **Retomar partida** (seção "Se o notebook travar ou desligar").
 6. Na interface, desfazer, posição, ajustes e os demais comandos ficam nas teclas F1 a F9
    (tabela acima). No modo texto, os comandos de emergência são `undo`, `fen <FEN>`,
    `forcar <lance>`, `tempo`, `ponder`, `avaliar`, `log` e `ajuda`.
@@ -296,8 +348,9 @@ formato nos dois modos.
 | `web.py`, `web/` | Interface no navegador: servidor local (biblioteca padrão) e página com tabuleiro clicável, placa de anúncio, relógios, súmula e os comandos da TUI |
 | `tui.py`, `tui.tcss` | Interface de torneio (TUI): placa de anúncio, lance adversário validado ao digitar, relógios, súmula e atalhos F1 a F9 |
 | `session.py` | Estado da partida usado pela TUI e pelo navegador: escolha do motor, a mesma lógica do `main.py` (relógio, log, ponder, contempt) e o salvamento para retomar |
-| `main.py` | Interface em modo texto (4 passos do FAQ Item 10), pondering seguro, comandos de emergência |
-| `logger.py` | Log obrigatório da banca (FAQ Item 9) |
+| `recuperacao.py` | Recuperação da partida interrompida para as três interfaces: arquivo salvo conferido com o log da banca, ou a partida remontada pelo log; também linha de comando |
+| `main.py` | Interface em modo texto (4 passos do FAQ Item 10), pondering seguro, comandos de emergência, retomada |
+| `logger.py` | Log obrigatório da banca (FAQ Item 9), gravado direto no disco (fsync) |
 | `uci.py` | Protocolo UCI (Arena, CuteChess, EnCroissant, Lichess e `tools/match.py`); opções `Motor` (`Proprio` ou `Stockfish`) e `Desempenho` (`Baixo`, `Medio` ou `Ultra`) |
 | `tools/match.py` | Match automático entre dois motores com Elo e intervalo de confiança |
 | `tools/baixar_stockfish.py` | Download do Stockfish 19 oficial, com conferência do SHA-256 |
