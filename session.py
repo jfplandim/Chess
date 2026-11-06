@@ -37,6 +37,7 @@ from motor_stockfish import (
     NOME_MOTOR,
     MotorIndisponivel,
     MotorStockfish,
+    avisos_de_energia,
     criar_motor,
     descrever_motor,
     motor_padrao,
@@ -52,6 +53,8 @@ VERSAO_SALVO = 1
 
 COR_PT = {chess.WHITE: "Brancas", chess.BLACK: "Pretas"}
 LANCES_PARA_LEMBRAR_RELOGIO = 15  # lances nossos sem F3 até a tela lembrar de sincronizar
+ENERGIA_A_CADA = 20.0             # segundos entre uma conferência e outra da tomada e do modo de energia
+LANCES_PARA_AVISAR_BANDEIRA = 25  # sem incremento que pague o operador: avisa quando faltar isso para a bandeira
 
 # Ritmos fixos: (minutos, incremento em segundos). No Armageddon os minutos dependem da cor.
 RITMOS_FIXOS = {
@@ -95,11 +98,12 @@ class Config:
     operador: float = 4.0           # segundos que a equipe gasta por lance (anunciar, mover, relógio)
     motor: str = field(default_factory=motor_padrao)  # "stockfish" (torneio) ou "proprio" (reserva)
     desempenho: str = "ultra"       # Stockfish: "ultra" (força total), "medio" ou "baixo"
+    inc_armageddon: float = 0.0     # incremento do Armageddon, se o árbitro der (o FAQ 12 não fala em incremento)
 
     def relogio(self) -> tuple[float, float]:
-        """Minutos e incremento efetivos (Armageddon: 5 min Brancas, 4 min Pretas, sem incremento)."""
+        """Minutos e incremento efetivos (Armageddon: 5 min Brancas, 4 min Pretas e o incremento do árbitro)."""
         if self.ritmo == "armageddon":
-            return (5.0 if self.our_color == chess.WHITE else 4.0), 0.0
+            return (5.0 if self.our_color == chess.WHITE else 4.0), self.inc_armageddon
         if self.ritmo in RITMOS_FIXOS:
             return RITMOS_FIXOS[self.ritmo]
         return self.minutos, self.incremento
@@ -107,7 +111,7 @@ class Config:
     def descricao_ritmo(self) -> str:
         minutos, inc = self.relogio()
         if self.ritmo == "armageddon":
-            return f"Armageddon {minutos:g} min"
+            return f"Armageddon {minutos:g} min" + (f" + {inc:g}" if inc else "")
         return f"{minutos:g} + {inc:g}"
 
 
@@ -349,9 +353,14 @@ class GameSession:
         )
         self.engine = criar_motor(config.motor, config.desempenho)  # MotorIndisponivel se o Stockfish não abrir
         self.engine.our_color = config.our_color  # contempt contado a partir da nossa cor
-        if config.ritmo == "armageddon" and not self.usa_stockfish:
-            # FAQ Item 12: empate classifica as Pretas (mesma regra do main.py). O Stockfish não tem contempt.
-            self.engine.contempt = ARMAGEDDON_CONTEMPT if config.our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
+        if config.ritmo == "armageddon":
+            # FAQ Item 12: empate classifica as Pretas (mesma regra do main.py)
+            if self.usa_stockfish:
+                # O Stockfish não tem contempt: a regra do empate imediato (motor_stockfish.py) faz as Pretas
+                # jogarem o lance que empata na hora e as Brancas fugirem dele
+                self.engine.regra_empate = "evitar" if config.our_color == chess.WHITE else "buscar"
+            else:
+                self.engine.contempt = ARMAGEDDON_CONTEMPT if config.our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
         self.board = chess.Board()
         self.fen_inicial = self.board.fen()
         self.lances: list[Lance] = []
@@ -367,12 +376,15 @@ class GameSession:
         self.operador_inicial = config.operador
         self.lances_desde_sincronia = 0
         self.calibracao_valida = True
+        self.ultimo_credito = 0.0       # crédito do ponder usado no último lance nosso (para a interface)
+        self._energia_em = -ENERGIA_A_CADA
+        self._avisos_energia: list[str] = []
+        self._energia_thread: threading.Thread | None = None
         if logger is None:
             logger = MatchLogger(team_color=COR_PT[self.our_color].upper())
             logger.log_event(f"Motor: {descrever_motor(self.engine)}")
             if config.ritmo == "armageddon" and self.usa_stockfish:
-                logger.log_event("Armageddon: empate classifica as Pretas (FAQ Item 12). "
-                                 "O Stockfish não tem contempt: avalia o empate como 0.")
+                logger.log_event(f"Armageddon: empate classifica as Pretas (FAQ Item 12). {self.descricao_regra_empate()}")
             elif config.ritmo == "armageddon":
                 logger.log_event(
                     f"Armageddon: contempt {self.engine.contempt:+d} cp (empate classifica as Pretas - FAQ Item 12)"
@@ -432,7 +444,77 @@ class GameSession:
         if self.lances_desde_sincronia >= LANCES_PARA_LEMBRAR_RELOGIO:
             # Sem sincronizar, o motor não sabe se o operador demora mais do que o configurado
             avisos.append(f"Confira o relógio físico (F3): {self.lances_desde_sincronia} lances nossos sem sincronizar.")
+        avisos += self._alerta_bandeira()
+        avisos += self._alertas_energia()
         return avisos
+
+    def _alertas_energia(self) -> list[str]:
+        """
+        Tomada e modo de energia conferidos durante a partida (a cada 20 s), não só ao abrir: se o
+        carregador soltar, o perfil da bateria deixa o processador e o motor bem mais lentos.
+        """
+        agora = time.perf_counter()
+        rodando = self._energia_thread is not None and self._energia_thread.is_alive()
+        if agora - self._energia_em >= ENERGIA_A_CADA and not rodando:
+            self._energia_em = agora
+
+            def conferir() -> None:
+                # Em thread: consultar o perfil do sistema (tuned) leva até ~0,5 s e não pode travar a tela
+                try:
+                    self._avisos_energia = avisos_de_energia()
+                except Exception:  # noqa: BLE001 - só informativo
+                    self._avisos_energia = []
+
+            self._energia_thread = threading.Thread(target=conferir, daemon=True)
+            self._energia_thread.start()
+        return list(self._avisos_energia)
+
+    def _alerta_bandeira(self) -> list[str]:
+        """
+        Sem incremento que pague o operador (Armageddon sem incremento, 25 + 0), o relógio acaba sozinho:
+        com 4 min e operador de 4,5 s, cerca de 50 lances, por mais rápido que o motor pense. Mostra, no
+        ritmo dos últimos lances, quantos lances faltam para a bandeira de cada lado.
+        """
+        tm = self.time_manager
+        if tm.increment > tm.operator_overhead:
+            return []
+        nossos = [lance.tempo for lance in self.lances if lance.nosso][-10:]
+        deles = [lance.tempo for lance in self.lances if not lance.nosso][-10:]
+        if len(nossos) < 3 or len(deles) < 3:
+            return []
+        custo_nosso = sum(nossos) / len(nossos) + tm.operator_overhead - tm.increment
+        # O tempo medido na vez do adversário inclui o nosso operador (anunciar, mover, digitar o lance dele)
+        custo_deles = sum(deles) / len(deles) - tm.operator_overhead - tm.increment
+        nosso, adv = self.relogios()
+        lances_nosso = nosso / custo_nosso if custo_nosso > 0 else float("inf")
+        lances_adv = adv / custo_deles if custo_deles > 0 else float("inf")
+        if min(lances_nosso, lances_adv) > LANCES_PARA_AVISAR_BANDEIRA:
+            return []
+
+        def texto(n: float) -> str:
+            return "muitos" if n == float("inf") else f"~{max(0, int(n))}"
+
+        aviso = (f"Bandeira: no ritmo atual, nosso relógio acaba em {texto(lances_nosso)} lances "
+                 f"e o do adversário em {texto(lances_adv)}.")
+        armageddon = self.config.ritmo == "armageddon"
+        if lances_nosso < lances_adv:
+            aviso += " Operador: acelere."
+            if armageddon and self.our_color == chess.BLACK:
+                aviso += " Com Pretas o empate classifica: aceitem a repetição."
+        elif armageddon and self.our_color == chess.WHITE:
+            aviso += " O adversário cai antes: sigam jogando, sem trocar para material insuficiente."
+        return [aviso]
+
+    def descricao_regra_empate(self) -> str:
+        """Texto da regra do empate imediato do Stockfish no Armageddon (log e interfaces)."""
+        regra = getattr(self.engine, "regra_empate", None)
+        if regra == "buscar":
+            return ("Regra do empate imediato: se algum lance empata na hora (repetição, 50 lances, afogamento ou "
+                    "material insuficiente), as Pretas jogam esse lance.")
+        if regra == "evitar":
+            return ("Regra do empate imediato: as Brancas não jogam lance que empata na hora nem lance que deixa "
+                    "o adversário empatar no lance seguinte, se houver outro.")
+        return ""
 
     # ------------------------------------------------------------------
     # Lances
@@ -441,8 +523,11 @@ class GameSession:
         """
         Busca o nosso lance numa cópia do tabuleiro. Roda fora da thread da interface.
         Se o Stockfish cair e não reabrir, a partida segue com o motor próprio: o relógio não para.
+        Se o adversário jogou o lance previsto, o tempo do ponder nesta posição vira crédito (time_manager.py).
         """
-        self.ponder_ctrl.stop_ponder()
+        credito = self.ponder_ctrl.credito_para(board)  # também para o ponder
+        self.time_manager.dar_credito_ponder(credito)
+        self.ultimo_credito = credito
         try:
             return self._buscar(board, stop_event, info_callback)
         except MotorIndisponivel as erro:
@@ -487,6 +572,7 @@ class GameSession:
             raise ValueError(f"O lance {move.uci()} não é legal na posição atual.")
         gasto = time.perf_counter() - self.inicio_turno
         self.time_manager.register_move_time(gasto)
+        self.time_manager.registrar_busca(resultado.score_cp, resultado.depth, resultado.source)
         self.lances_desde_sincronia += 1
         self.logger.log_engine_move(
             move_number=self.board.fullmove_number,
@@ -533,6 +619,7 @@ class GameSession:
         self.board.push(move)
         avaliacao = -evaluate_board(self.board, check_terminal=True)
         self.board.pop()
+        self.time_manager.registrar_busca(avaliacao, 0, "MANUAL")
         self.logger.log_event(f"Lance manual (nosso): {move.uci()}")
         self.logger.log_engine_move(
             move_number=self.board.fullmove_number,
@@ -598,6 +685,8 @@ class GameSession:
         self.resultado, self.encerrada = None, False
         self.inicio_turno = time.perf_counter()
         self.calibracao_valida = False
+        self.time_manager.limpar_historico()
+        self.ponder_ctrl.posicao_prevista = None
         self.salvar()
         return desfeitos
 
@@ -620,6 +709,8 @@ class GameSession:
         self.resultado, self.encerrada = None, False
         self.inicio_turno = time.perf_counter()
         self.calibracao_valida = False
+        self.time_manager.limpar_historico()
+        self.ponder_ctrl.posicao_prevista = None
         self.logger.log_event(f"Posição ajustada via FEN: {board.fen()}")
         self._verificar_fim()
         self.salvar()

@@ -87,6 +87,14 @@ RadioSet:focus {
     width: 8;
 }
 
+#armageddon-inc {
+    height: 3;
+}
+
+#armageddon-inc Input {
+    width: 8;
+}
+
 .unidade {
     padding: 1 1 0 1;
     color: $grafite;

@@ -158,6 +158,8 @@ label.opcao {
 label.opcao:has(input:checked) { background: var(--borda); }
 #personalizado { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--grafite); }
 #personalizado input { width: 64px; }
+#armageddon-inc { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--grafite); }
+#armageddon-inc input { width: 64px; }
 .campo-inicio { display: grid; gap: 6px; padding: 8px; color: var(--grafite); }
 .campo-inicio input { width: 90px; }
 #resumo {

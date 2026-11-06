@@ -27,7 +27,13 @@ from evaluation import evaluate_board
 from time_manager import TimeManager, ler_relogio
 from search import SearchEngine, SearchResult
 from logger import MatchLogger
-from motor_stockfish import MotorIndisponivel, criar_motor, descrever_motor, verificar_stockfish
+from motor_stockfish import (
+    MotorIndisponivel,
+    avisos_de_energia,
+    criar_motor,
+    descrever_motor,
+    verificar_stockfish,
+)
 
 # ==============================================================================
 # TABULEIRO NO NAVEGADOR (SVG que se atualiza sozinho)
@@ -231,32 +237,47 @@ class PonderController:
 
     Segurança: a busca de ponder e a busca principal NUNCA rodam ao mesmo tempo
     (stop_ponder() espera a thread terminar; além disso o motor tem um lock interno).
+
+    Crédito do ponder (gestão de tempo, time_manager.py ideia 6): o controlador guarda a posição
+    ponderada, quanto tempo o ponder pensou nela e até que profundidade chegou. Se o adversário jogar
+    o lance previsto, credito_para() devolve esse tempo, que conta como já gasto no nosso lance.
     """
+
+    PROFUNDIDADE_MINIMA_CREDITO = 6  # ponder raso (adversário jogou na hora) quase não dá crédito
 
     def __init__(self, engine: SearchEngine):
         self.engine = engine
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
+        self.posicao_prevista: str | None = None  # FEN depois do lance previsto (None: sem previsão)
+        self.inicio: float | None = None
+        self.duracao = 0.0
+        self.resultado: SearchResult | None = None
 
     def start_ponder(self, board: chess.Board, predicted_uci: str | None = None) -> None:
         self.stop_ponder()
         ponder_board = board.copy()
+        previsto = False
         if predicted_uci:
             try:
                 pmove = chess.Move.from_uci(predicted_uci)
                 if pmove in ponder_board.legal_moves:
                     ponder_board.push(pmove)
+                    previsto = True
             except ValueError:
                 pass
+        self.posicao_prevista, self.resultado, self.duracao, self.inicio = None, None, 0.0, None
         if ponder_board.is_game_over():
             return
 
         stop_event = threading.Event()
         self.stop_event = stop_event
+        self.posicao_prevista = ponder_board.fen() if previsto else None
+        self.inicio = time.perf_counter()
 
         def _ponder_worker():
             try:
-                self.engine.search_best_move(
+                self.resultado = self.engine.search_best_move(
                     board=ponder_board,
                     time_manager=TimeManager(initial_minutes=60.0, increment_seconds=0.0),
                     max_depth=64,
@@ -267,7 +288,7 @@ class PonderController:
                     infinite=True,
                 )
             except Exception:
-                pass
+                self.resultado = None
 
         self.thread = threading.Thread(target=_ponder_worker, daemon=True)
         self.thread.start()
@@ -276,7 +297,27 @@ class PonderController:
         if self.thread is not None:
             self.stop_event.set()
             self.thread.join(timeout=10.0)  # a busca verifica o 'stop' a cada ~1000 nós (< 0,1 s)
+            if self.inicio is not None:
+                self.duracao = time.perf_counter() - self.inicio
+                self.inicio = None
         self.thread = None
+
+    def credito_para(self, board: chess.Board) -> float:
+        """
+        Segundos de ponder que valem para esta posição: o adversário jogou o lance previsto e o ponder
+        pensou nela até uma profundidade razoável. 0 se errou, se não havia previsão ou se o ponder falhou.
+        Usa o crédito uma vez só (a próxima consulta devolve 0).
+        """
+        self.stop_ponder()
+        acertou = (
+            self.posicao_prevista is not None
+            and self.posicao_prevista == board.fen()
+            and self.resultado is not None
+            and self.resultado.depth >= self.PROFUNDIDADE_MINIMA_CREDITO
+        )
+        credito = self.duracao if acertou else 0.0
+        self.posicao_prevista, self.resultado, self.duracao = None, None, 0.0
+        return credito
 
 
 def print_help_menu() -> None:
@@ -336,7 +377,11 @@ def run_tournament_cli() -> None:
         init_min, inc_sec = 25.0, 0.0
     elif tc_choice == "3":
         init_min = 5.0 if our_color == chess.WHITE else 4.0
-        inc_sec = 0.0
+        try:
+            # O FAQ 12 não fala em incremento no Armageddon: confirme com o árbitro
+            inc_sec = max(0.0, float(input("  Incremento do Armageddon em segundos (Enter = 0): ").strip() or "0"))
+        except ValueError:
+            inc_sec = 0.0
     elif tc_choice == "4":
         try:
             init_min = float(input("  Minutos iniciais (ex: 15): ").strip() or "15")
@@ -384,7 +429,14 @@ def run_tournament_cli() -> None:
     logger = MatchLogger(team_color=color_name)
     logger.log_event(f"Motor: {descrever_motor(engine)}")
     ponder_ctrl = PonderController(engine)
-    if tc_choice == "3" and not usa_stockfish:  # o Stockfish não tem contempt
+    if tc_choice == "3" and usa_stockfish:
+        # Armageddon (FAQ Item 12): o Stockfish não tem contempt; a regra do empate imediato faz as
+        # Pretas jogarem o lance que empata na hora e as Brancas fugirem dele (motor_stockfish.py)
+        engine.regra_empate = "evitar" if our_color == chess.WHITE else "buscar"
+        logger.log_event("Armageddon: empate classifica as Pretas (FAQ Item 12). Regra do empate imediato: "
+                         + ("Brancas evitam o lance que empata na hora." if our_color == chess.WHITE
+                            else "Pretas jogam o lance que empata na hora."))
+    elif tc_choice == "3":
         # Armageddon (FAQ Item 12): empate classifica as Pretas. Com Brancas o empate é derrota
         # (evitar); com Pretas vale a classificação (buscar repetição e finais empatados).
         engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
@@ -398,7 +450,8 @@ def run_tournament_cli() -> None:
     print(f"  {'Motor':<28}: {descrever_motor(engine)}")
     if usa_stockfish:
         if tc_choice == "3":
-            print(f"  {'Armageddon':<28}: empate classifica as Pretas; o Stockfish avalia o empate como 0")
+            regra = "evitam o lance que empata na hora" if our_color == chess.WHITE else "jogam o lance que empata na hora"
+            print(f"  {'Armageddon':<28}: empate classifica as Pretas; regra do empate imediato: {'Brancas' if our_color == chess.WHITE else 'Pretas'} {regra}")
     else:
         print(f"  {'Contempt (empate)':<28}: {engine.contempt:+d} cp"
               + ("  (Armageddon: empate classifica as Pretas)" if tc_choice == "3" else ""))
@@ -418,6 +471,7 @@ def run_tournament_cli() -> None:
         print(f"  [AVISO] Não foi possível abrir o tabuleiro no navegador: {exc}")
 
     last_predicted_opp_move: str | None = None
+    ultima_energia = -20.0
 
     while True:
         try:
@@ -461,8 +515,10 @@ def run_tournament_cli() -> None:
             # TURNO DA NOSSA EQUIPE (MOTOR CALCULA E ESCOLHE O LANCE)
             # ==================================================================
             if board.turn == our_color:
-                ponder_ctrl.stop_ponder()
-                print("\n  >>> Calculando melhor lance...")
+                # Ponder acertou o lance do adversário: o tempo dele nesta posição conta como já gasto
+                credito = ponder_ctrl.credito_para(board)
+                time_manager.dar_credito_ponder(credito)
+                print("\n  >>> Calculando melhor lance..." + (f" (ponder acertou: {credito:.1f}s de crédito)" if credito else ""))
                 try:
                     try:
                         result = engine.search_best_move(
@@ -503,6 +559,7 @@ def run_tournament_cli() -> None:
 
                 # Atualiza relógio interno e registra no Log Obrigatório (FAQ Item 9)
                 time_manager.register_move_time(result.elapsed_sec)
+                time_manager.registrar_busca(result.score_cp, result.depth, result.source)
                 logger.log_engine_move(
                     move_number=move_num,
                     turn_color=our_color,
@@ -542,6 +599,11 @@ def run_tournament_cli() -> None:
             opp_start_wait = time.perf_counter()
             if use_ponder:
                 ponder_ctrl.start_ponder(board, predicted_uci=last_predicted_opp_move)
+            # Tomada e modo de energia, na vez do adversário (a consulta leva até ~0,5 s; no máximo a cada 20 s)
+            if opp_start_wait - ultima_energia >= 20.0:
+                ultima_energia = opp_start_wait
+                for aviso in avisos_de_energia():
+                    print(f"  [ATENÇÃO - ENERGIA] {aviso}")
 
             raw_cmd = input(
                 f"\n[VEZ DO ADVERSÁRIO] Digite o lance anunciado em UCI (ex: e7e5) ou comando ('ajuda'): "
@@ -593,6 +655,7 @@ def run_tournament_cli() -> None:
                     m = board.pop()
                     undone.append(m.uci())
                 last_predicted_opp_move = None
+                time_manager.limpar_historico()
                 print(f"\n  [UNDO] Lances desfeitos com sucesso: {', '.join(undone)}")
                 logger.log_event(f"UNDO executado. Lances revertidos: {', '.join(undone)}")
                 continue
@@ -650,6 +713,7 @@ def run_tournament_cli() -> None:
                     new_board = chess.Board(fen_str)
                     board = new_board
                     last_predicted_opp_move = None
+                    time_manager.limpar_historico()
                     print("\n  [TABULEIRO ATUALIZADO VIA FEN COM SUCESSO!]")
                     logger.log_event(f"Posição ajustada via FEN: {fen_str}")
                 except ValueError as e:
@@ -662,6 +726,7 @@ def run_tournament_cli() -> None:
                     fmove = chess.Move.from_uci(forced_str)
                     if fmove in board.legal_moves:
                         board.push(fmove)
+                        time_manager.limpar_historico()
                         logger.log_event(f"Lance forçado manualmente: {forced_str}")
                         print(f"\n  [FORÇADO] Lance {forced_str} aplicado.")
                     else:

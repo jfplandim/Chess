@@ -24,6 +24,14 @@ Verifica:
     lance nulo, casa repetida e SAN ambíguo viram erro; nenhum texto derruba a interface
 14. Custo do operador recalibrado pelo relógio físico a cada sincronização (só para cima) e
     leitura do relógio digitado no F3 (formato estrito, confirmação para valor improvável)
+15. Crédito do ponder: o tempo pensado no turno do adversário, na posição que apareceu, conta como
+    já gasto (limite menor, piso de confirmação, vale uma vez só) e o PonderController só dá crédito
+    quando o adversário joga o lance previsto
+16. Empate morto: duas buscas seguidas com nota 0 e profundidade alta -> 30% do tempo no lance seguinte
+17. Regra do empate imediato do Stockfish (Armageddon e contempt): Pretas jogam o lance que empata na
+    hora, Brancas fogem dele e do lance que deixa o adversário empatar; contempt decide nas outras partidas
+18. Armageddon com incremento, regra ligada pela sessão (e desligada na partida seguinte), aviso de
+    bandeira sem incremento e aviso de energia durante a partida
 """
 
 import os
@@ -436,6 +444,198 @@ def run_all_tests() -> None:
         print("  -> [OK] F3: 12:99, inf e -5 recusados; 1230 pede confirmação; diferença absurda não recalibra")
     finally:
         (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger) = salvos
+        shutil.rmtree(pasta, ignore_errors=True)
+
+    # 15. Crédito do ponder
+    print("\n[TESTE 15] Crédito do ponder: o tempo pensado no turno do adversário conta como já gasto...")
+    pos = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 9")
+
+    def tm_partida() -> TimeManager:
+        t = TimeManager(initial_minutes=15, increment_seconds=10, move_overhead=0.5, operator_overhead=4.0)
+        t.remaining_time = 600.0
+        return t
+
+    tm_normal = tm_partida()
+    alvo, duro = tm_normal.allocate_time(pos, 35)
+    tm_c = tm_partida()
+    tm_c.dar_credito_ponder(alvo)  # o ponder pensou o alvo inteiro nesta posição
+    _, duro_c = tm_c.allocate_time(pos, 35)
+    assert duro_c < duro, "Com crédito o limite rígido tem de cair"
+    assert duro_c >= 0.15 * alvo - 1e-9, "O piso de confirmação (15% do alvo) não pode sumir"
+    tm_c.start_time -= 0.10 * alvo
+    assert not tm_c.should_abort_search(), "Parou antes do piso de confirmação"
+    tm_c.start_time -= 0.06 * alvo
+    assert tm_c.should_abort_search() and tm_c.should_stop_iteration(), "Com crédito grande, para logo depois do piso"
+    _, duro_depois = tm_c.allocate_time(pos, 35)
+    assert abs(duro_depois - duro) < 1e-6, "O crédito vale um lance só"
+    tm_p = tm_partida()
+    tm_p.dar_credito_ponder(1.0)  # ponder curto: quase não muda o lance
+    tm_p.allocate_time(pos, 35)
+    tm_p.start_time -= 0.5 * alvo - 1.5
+    assert not tm_p.should_abort_search(), "Crédito de 1 s não pode cortar o lance pela metade"
+    tm_f = tm_partida()
+    tm_f.set_fixed_time(2.0)
+    tm_f.dar_credito_ponder(100.0)
+    assert tm_f.allocate_time(pos, 35)[1] > 1.4, "Tempo fixo (UCI movetime) ignora o crédito"
+    print(f"  -> [OK] 15+10, 600 s: alvo {alvo:.1f}s, limite {duro:.1f}s -> com crédito {duro_c:.1f}s; "
+          "piso de 15%, vale uma vez, crédito pequeno não corta o lance")
+    # PonderController: crédito só quando o adversário joga o lance previsto
+    from main import PonderController
+    from motor_stockfish import encontrar_stockfish as _achar_sf
+
+    if _achar_sf():
+        from motor_stockfish import criar_motor as _criar
+
+        motor_p = _criar("stockfish")
+        espera = 0.4
+    else:
+        motor_p = SearchEngine()
+        espera = 1.5
+    b0 = chess.Board()
+    b0.push_uci("e2e4")
+    ctrl = PonderController(motor_p)
+    ctrl.start_ponder(b0, predicted_uci="e7e5")
+    time.sleep(espera)
+    b_hit = b0.copy()
+    b_hit.push_uci("e7e5")
+    credito = ctrl.credito_para(b_hit)
+    assert credito >= espera * 0.8, f"Acertou o lance previsto e o crédito foi {credito:.2f}s"
+    assert ctrl.credito_para(b_hit) == 0.0, "O crédito vale uma vez só"
+    ctrl.start_ponder(b0, predicted_uci="e7e5")
+    time.sleep(espera)
+    b_erro = b0.copy()
+    b_erro.push_uci("c7c5")
+    assert ctrl.credito_para(b_erro) == 0.0, "O adversário jogou outro lance: sem crédito"
+    print(f"  -> [OK] Ponder: crédito de {credito:.2f}s quando o adversário jogou o previsto; 0 quando jogou outro")
+
+    # 16. Empate morto
+    print("\n[TESTE 16] Empate morto: nota 0 estável com profundidade alta -> 30% do tempo...")
+    tm_e = tm_partida()
+    alvo_normal = tm_e.allocate_time(pos, 35)[0]
+    tm_e.registrar_busca(0, 25, "SEARCH")
+    assert tm_e.allocate_time(pos, 35)[0] == alvo_normal and not tm_e.economia_empate_morto, "Um 0 só não basta"
+    tm_e.registrar_busca(0, 30, "SEARCH")
+    alvo_morto = tm_e.allocate_time(pos, 35)[0]
+    assert abs(alvo_morto - 0.3 * alvo_normal) < 1e-6 and tm_e.economia_empate_morto, "Empate morto deveria usar 30%"
+    tm_e.registrar_busca(12, 30, "SEARCH")
+    assert tm_e.allocate_time(pos, 35)[0] == alvo_normal, "Nota diferente de 0: volta ao tempo normal"
+    tm_e.registrar_busca(0, 30, "SEARCH")
+    tm_e.registrar_busca(0, 9, "SEARCH")
+    assert tm_e.allocate_time(pos, 35)[0] == alvo_normal, "Profundidade baixa não é empate morto"
+    tm_e.registrar_busca(0, 30, "SEARCH")
+    tm_e.registrar_busca(0, 30, "BOOK")
+    assert tm_e.allocate_time(pos, 35)[0] == alvo_normal, "Lance de livro não conta"
+    tm_e.registrar_busca(0, 30, "SEARCH")
+    tm_e.registrar_busca(0, 30, "SEARCH")
+    tm_e.limpar_historico()
+    assert tm_e.allocate_time(pos, 35)[0] == alvo_normal, "Depois de desfazer, o histórico recomeça"
+    print(f"  -> [OK] alvo {alvo_normal:.1f}s -> {alvo_morto:.1f}s em empate morto; nota, profundidade, livro "
+          "e desfazer voltam ao normal")
+
+    # 17. Regra do empate imediato (Stockfish)
+    print("\n[TESTE 17] Regra do empate imediato do Stockfish (Armageddon e contempt)...")
+    from motor_stockfish import lances_que_empatam, permite_empate
+
+    rep = chess.Board()
+    for u in "g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1".split():
+        rep.push_uci(u)
+    assert [m.uci() for m in lances_que_empatam(rep, list(rep.legal_moves))] == ["f6g8"]
+    rep_b = rep.copy()
+    rep_b.pop()  # Brancas a jogar: f3g1 deixa as Pretas repetirem
+    assert permite_empate(rep_b, chess.Move.from_uci("f3g1"))
+    assert not permite_empate(rep_b, chess.Move.from_uci("e2e4"))
+    mat = chess.Board("4k3/8/8/8/1n6/8/P7/4K3 b - - 0 40")
+    assert chess.Move.from_uci("b4a2") in lances_que_empatam(mat, list(mat.legal_moves)), "Nxa2 deixa material insuficiente"
+    if not _achar_sf():
+        print("  -> [AVISO] Stockfish não encontrado: só as funções da regra foram testadas.")
+    else:
+        sf_r = _criar("stockfish")
+        try:
+            sf_r.our_color = chess.BLACK
+            sf_r.regra_empate = "buscar"
+            r = sf_r.search_best_move(rep.copy(), fixed_tm(0.5), use_book=False, verbose=False)
+            assert r.best_move.uci() == "f6g8" and r.source == "REGRA_EMPATE", f"Pretas deviam empatar: {r.best_move}"
+            sf_r.our_color = chess.WHITE
+            sf_r.regra_empate = "evitar"
+            r = sf_r.search_best_move(rep_b.copy(), fixed_tm(0.5), use_book=False, verbose=False)
+            assert r.best_move.uci() != "f3g1" and r.best_move in rep_b.legal_moves, "Brancas deixaram repetir"
+            sf_r.regra_empate = None
+            sf_r.our_color = chess.BLACK
+            sf_r.contempt = 300  # evita o empate se a alternativa não for pior que -3 peões
+            r = sf_r.search_best_move(rep.copy(), fixed_tm(0.5), use_book=False, verbose=False)
+            assert r.best_move.uci() != "f6g8", "Contempt positivo: devia fugir da repetição"
+            sf_r.contempt = -300  # procura o empate: só joga outro lance se ganhar mais de 3 peões
+            r = sf_r.search_best_move(rep.copy(), fixed_tm(0.5), use_book=False, verbose=False)
+            assert r.best_move.uci() == "f6g8" and r.source == "REGRA_EMPATE", "Contempt negativo: devia repetir"
+            print("  -> [OK] Pretas no Armageddon repetem (f6g8); Brancas não deixam repetir; "
+                  "contempt +300 foge e -300 aceita a repetição")
+        finally:
+            sf_r.contempt, sf_r.regra_empate, sf_r.our_color = 0, None, None
+
+    # 18. Armageddon com incremento, aviso de bandeira e de energia
+    print("\n[TESTE 18] Armageddon com incremento, aviso de bandeira e aviso de energia...")
+    cfg_a = sessao_mod.Config(our_color=chess.BLACK, ritmo="armageddon", inc_armageddon=2.0, motor="proprio")
+    assert cfg_a.relogio() == (4.0, 2.0) and cfg_a.descricao_ritmo() == "Armageddon 4 min + 2"
+    assert sessao_mod.Config(our_color=chess.WHITE, ritmo="armageddon").relogio() == (5.0, 0.0)
+    pasta = tempfile.mkdtemp(prefix="teste_sessao_")
+    salvos = (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger,
+              sessao_mod.avisos_de_energia)
+    sessao_mod.LOGS_DIR = os.path.join(pasta, "logs")
+    sessao_mod.ARQUIVO_SALVO = os.path.join(pasta, "logs", "partida_em_andamento.json")
+    sessao_mod.ARQUIVO_SALVO_ANTERIOR = os.path.join(pasta, "logs", "partida_salva_anterior.json")
+    sessao_mod.MatchLogger = functools.partial(MatchLogger, base_dir=pasta)
+    try:
+        if _achar_sf():
+            s_arm = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.WHITE, ritmo="armageddon",
+                                                             motor="stockfish", ponder=False))
+            assert s_arm.engine.regra_empate == "evitar", "Brancas no Armageddon: regra 'evitar'"
+            s_norm = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.WHITE, motor="stockfish", ponder=False))
+            assert s_norm.engine.regra_empate is None, "A regra do Armageddon não pode sobrar na partida seguinte"
+        s = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.BLACK, ritmo="armageddon", motor="proprio",
+                                                     operador=4.0, ponder=False))
+        assert s.engine.contempt == -100, "Motor próprio com Pretas no Armageddon: contempt -100"
+        rng = random.Random(18)
+        for _ in range(4):
+            quietos = [m for m in s.board.legal_moves if not s.board.is_capture(m)] or list(s.board.legal_moves)
+            s.registrar_adversario(rng.choice(quietos))
+            quietos = [m for m in s.board.legal_moves if not s.board.is_capture(m)] or list(s.board.legal_moves)
+            m = rng.choice(quietos)
+            s.registrar_nosso(SearchResult(m, 0, 10, 1000, 0.5, [m.uci()], "SEARCH", 10, [m]))
+        sessao_mod.avisos_de_energia = lambda: []
+        s._energia_em = -1e9
+        s.alertas()
+        s._energia_thread.join(timeout=5)
+        s.time_manager.sync_clocks(200.0, 200.0)  # direto no TM: sem recalibrar o operador
+        assert not any("Bandeira" in a for a in s.alertas()), "Com relógio folgado não há aviso de bandeira"
+        s.time_manager.sync_clocks(60.0, 200.0)
+        bandeira = [a for a in s.alertas() if "Bandeira" in a]
+        assert bandeira and "acelere" in bandeira[0], f"Sem incremento e 60 s, devia avisar: {s.alertas()}"
+        sessao_mod.avisos_de_energia = lambda: ["O notebook está na bateria: ligue na tomada."]
+        s._energia_em = -1e9
+        s.alertas()  # a conferência roda numa thread (o perfil do sistema leva até 0,5 s): não trava a tela
+        s._energia_thread.join(timeout=5)
+        assert any("bateria" in a for a in s.alertas()), "O aviso de energia devia aparecer durante a partida"
+        if sys.platform.startswith("linux"):
+            import motor_stockfish as ms
+
+            perfil_salvo = ms._perfil_do_sistema
+            ms._perfil_do_sistema = lambda: "powersave"  # tuned em economia, mesmo na tomada (caso de 04/11)
+            try:
+                epp = ""
+                try:
+                    epp = open("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference").read().strip()
+                except OSError:
+                    pass
+                if epp not in ("low-power", "quiet", "power", "balance_power"):
+                    assert any("perfil de energia do sistema" in a for a in ms.avisos_de_energia()), \
+                        "O perfil powersave do tuned devia gerar aviso"
+            finally:
+                ms._perfil_do_sistema = perfil_salvo
+        print(f"  -> [OK] Armageddon 4 min + 2 s; regra do Stockfish liga e desliga; \"{bandeira[0][:60]}...\"; "
+              "aviso de bateria durante a partida")
+    finally:
+        (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger,
+         sessao_mod.avisos_de_energia) = salvos
         shutil.rmtree(pasta, ignore_errors=True)
 
     print("\n======================================================================")

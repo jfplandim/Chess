@@ -267,7 +267,7 @@ function desenharTopo() {
   const partes = [];
   if (E.ajustes.economia) partes.push('<span class="marcado">Economia ligada</span>');
   if (!E.ajustes.ponder) partes.push('<span class="fraco">Ponder desligado</span>');
-  if (!E.stockfish && E.ajustes.contempt !== 15) {
+  if (E.ajustes.contempt !== (E.stockfish ? 0 : 15)) {
     partes.push(`<span class="fraco">Contempt ${E.ajustes.contempt > 0 ? "+" : ""}${E.ajustes.contempt}</span>`);
   }
   partes.push(`<span class="${E.stockfish ? "marcado" : "fraco"}">${esc(E.nome_motor)}</span>`);
@@ -285,6 +285,7 @@ function configInicio() {
     ritmo: form.elements.ritmo.value,
     minutos: $("#minutos").value,
     incremento: $("#incremento").value,
+    inc_armageddon: $("#inc-armageddon").value,
     ponder: $("#ponder").checked,
     operador: $("#operador").value,
     motor: form.elements.motor.value || "proprio",
@@ -314,14 +315,19 @@ function desenharInicio() {
 function atualizarResumo() {
   const c = configInicio();
   $("#personalizado").hidden = c.ritmo !== "personalizado";
+  $("#armageddon-inc").hidden = c.ritmo !== "armageddon";
   const cor = c.cor === "b" ? "Pretas" : "Brancas";
   let html;
   if (c.ritmo === "armageddon") {
     const minutos = c.cor === "b" ? 4 : 5;
     const plano = c.motor === "stockfish"
-      ? "O Stockfish não tem contempt: avalia o empate como 0."
+      ? (c.cor === "b"
+        ? "Se algum lance empatar na hora, o motor joga esse lance."
+        : "O motor não joga lance que empata na hora nem deixa o adversário empatar no lance seguinte.")
       : `O motor vai ${c.cor === "b" ? "procurar o empate (contempt −100)" : "evitar o empate (contempt +100)"}.`;
-    html = `Jogamos de ${cor}, Armageddon com ${minutos} minutos e sem incremento.<br>
+    const incArm = parseFloat(String(c.inc_armageddon).replace(",", ".")) || 0;
+    const semInc = incArm ? `${esc(c.inc_armageddon)} segundos de incremento` : "sem incremento";
+    html = `Jogamos de ${cor}, Armageddon com ${minutos} minutos e ${semInc}.<br>
       <span class="armageddon">O empate classifica as Pretas. ${plano}</span>`;
   } else {
     const [minutos, inc] = c.ritmo === "oficial" ? [15, 10] : c.ritmo === "edital" ? [25, 0] : [c.minutos, c.incremento];
@@ -503,6 +509,8 @@ function desenharMotor() {
     else if (m.origem === "SYZYGY_TB") html += '<p class="forte">Lance de tablebase: resultado teórico exato.</p>';
     else if (m.origem === "EMERGENCY") {
       html += '<p class="emergencia">Lance de emergência: a busca falhou e o lance saiu da avaliação em 1 lance.</p>';
+    } else if (m.origem === "REGRA_EMPATE") {
+      html += '<p class="forte">Regra do empate imediato (Armageddon ou contempt): lance escolhido pela regra da equipe.</p>';
     } else {
       html += `<p><strong>Profundidade ${m.profundidade}</strong>
         <span class="fraco">(seletiva ${m.seletiva}), ${esc(m.nos)} nós, ${esc(m.nps)} por segundo, ${esc(m.tempo)}</span></p>`;
@@ -513,6 +521,8 @@ function desenharMotor() {
         <div class="trilho"><div class="cheio ${m.barra >= 0 ? "bom" : "ruim"}" style="width:${largura}%"></div><div class="meio"></div></div>
         <span>nós</span></div>
       <p><span class="fraco">Linha principal</span> <span class="pv">${esc(m.pv)}</span></p>`;
+    if (m.credito) html += `<p class="fraco">Ponder acertou: ${esc(m.credito)} pensados no tempo do adversário contaram como já gastos.</p>`;
+    if (m.empate_morto) html += '<p class="fraco">Empate morto (nota 0,00 estável): este lance usou 30% do tempo.</p>';
   }
   if (E.fase === "adversario" && E.ponder.ligado) {
     const previsto = E.ponder.previsto ? `, esperando ${esc(E.ponder.previsto)}` : "";

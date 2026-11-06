@@ -16,6 +16,12 @@ Ideias principais (para a Arguição da Banca):
 5. Nunca perder por tempo: margem de segurança fixa + zona de sobrevivência com o relógio baixo
    (o alvo cai para metade do incremento líquido mais 1/25 do relógio; o resto do incremento
    reconstrói o relógio).
+6. Crédito do ponder: quando o adversário joga o lance previsto, o tempo que o ponder já pensou
+   NESTA posição conta como tempo já gasto no lance. A tabela de transposição guarda essa busca, então
+   o motor volta à mesma profundidade em milissegundos e o lance sai bem mais rápido, sem perder força.
+   No desempate por tempo (FAQ 12) esse relógio poupado conta a nosso favor.
+7. Empate morto: se as duas últimas buscas deram nota exatamente 0 com profundidade alta (o Stockfish
+   vê empate forçado: repetição, fortaleza, material insuficiente), o lance usa 30% do tempo normal.
 """
 
 import math
@@ -23,6 +29,15 @@ import re
 import time
 
 import chess
+
+# Crédito do ponder (ideia 6)
+CREDITO_PISO = 0.15          # mesmo com o crédito, pensa pelo menos 15% do alvo (confirma com a tabela quente)
+CREDITO_PISO_MINIMO = 0.2    # e nunca menos de 0,2 s
+CREDITO_PARADA = 0.5         # com o crédito, para quando ponder + agora chega a metade do alvo do lance
+
+# Empate morto (ideia 7)
+EMPATE_MORTO_PROFUNDIDADE = 18
+EMPATE_MORTO_FATOR = 0.3
 
 
 class TimeManager:
@@ -60,6 +75,35 @@ class TimeManager:
         self._changes = 0.0
         self._fail_low = False
 
+        # Crédito do ponder: definido antes da busca do lance (dar_credito_ponder) e usado uma vez
+        self.credito_ponder = 0.0     # segundos que o ponder pensou na posição que apareceu no tabuleiro
+        self._credito = 0.0           # crédito em uso na busca atual
+        self._piso = 0.0              # com crédito, a busca não para antes disto
+        # Empate morto: (nota, profundidade, origem) das nossas últimas buscas
+        self.ultimas_buscas: list[tuple[int, int, str]] = []
+        self.economia_empate_morto = False  # o lance atual está no modo empate morto (para a interface)
+
+    # ------------------------------------------------------------------
+    def dar_credito_ponder(self, segundos: float) -> None:
+        """O adversário jogou o lance previsto: o ponder já pensou 'segundos' nesta posição."""
+        self.credito_ponder = max(0.0, float(segundos))
+
+    def registrar_busca(self, score_cp: int, depth: int, source: str) -> None:
+        """Guarda a nota e a profundidade do nosso lance (empate morto, ideia 7)."""
+        self.ultimas_buscas = (self.ultimas_buscas + [(int(score_cp), int(depth), source)])[-2:]
+
+    def limpar_historico(self) -> None:
+        """Depois de desfazer, mudar a posição ou retomar: as últimas buscas e o crédito não valem mais."""
+        self.ultimas_buscas = []
+        self.credito_ponder = 0.0
+
+    def empate_morto(self) -> bool:
+        """As duas últimas buscas nossas deram exatamente 0 com profundidade alta."""
+        return len(self.ultimas_buscas) == 2 and all(
+            nota == 0 and prof >= EMPATE_MORTO_PROFUNDIDADE and origem == "SEARCH"
+            for nota, prof, origem in self.ultimas_buscas
+        )
+
     # ------------------------------------------------------------------
     def sync_clocks(self, our_seconds: float, opp_seconds: float | None = None) -> None:
         """Sincroniza manualmente o relógio interno com o relógio físico da mesa."""
@@ -77,6 +121,10 @@ class TimeManager:
         self._stable_iterations = 0
         self._changes = 0.0
         self._fail_low = False
+        # O crédito do ponder vale só para este lance
+        credito, self.credito_ponder = self.credito_ponder, 0.0
+        self._credito = self._piso = 0.0
+        self.economia_empate_morto = False
 
         if self.fixed_time is not None:
             t = max(0.02, self.fixed_time - self.move_overhead)
@@ -106,6 +154,13 @@ class TimeManager:
         usable = max(usable, remaining * 0.05)
         optimum = usable / mtg * self.time_factor
 
+        # Empate morto (ideia 7): pensar muito não muda um empate forçado, e cada segundo poupado
+        # conta no desempate por tempo. O limite rígido continua proporcional ao alvo, então uma
+        # surpresa (nota caindo, lance mudando) ainda ganha mais tempo.
+        if self.empate_morto():
+            optimum *= EMPATE_MORTO_FATOR
+            self.economia_empate_morto = True
+
         # Zona de sobrevivência (relógio baixo): com poucos lances de folga no relógio, o alvo cai
         # para METADE do incremento líquido (incremento - operador) mais relógio/25. O resto do
         # incremento reconstrói o relógio a cada lance, mesmo que o operador demore um pouco mais
@@ -124,9 +179,18 @@ class TimeManager:
         hard = max(hard, 0.05)
         optimum = min(optimum, hard)
 
+        # Crédito do ponder (ideia 6): o tempo do ponder nesta posição conta como já gasto. Com a
+        # tabela quente o motor volta à profundidade do ponder em milissegundos; o piso garante uma
+        # busca curta de confirmação, e o limite rígido também desconta o crédito (ele precisa parar
+        # no meio de uma profundidade: com a tabela quente, a profundidade seguinte demora segundos).
+        if credito > 0:
+            self._piso = min(hard, max(CREDITO_PISO_MINIMO, CREDITO_PISO * optimum))
+            self._credito = credito
+            hard = max(self._piso, hard - credito)
+
         self.optimum = max(0.02, optimum)
         self.soft_limit = self.optimum
-        self.hard_limit = max(self.optimum, hard)
+        self.hard_limit = max(self.optimum if not self._credito else self._piso, hard)
         return self.soft_limit, self.hard_limit
 
     # ------------------------------------------------------------------
@@ -169,10 +233,19 @@ class TimeManager:
         """
         if self.fixed_time is not None:
             return self.elapsed() >= self.hard_limit * 0.6
+        if self._credito:
+            return self._parar_com_credito()
         return self.elapsed() >= self.soft_limit * 0.6
 
     def should_abort_search(self) -> bool:
+        if self._credito and self._parar_com_credito():
+            return True
         return self.elapsed() >= self.hard_limit
+
+    def _parar_com_credito(self) -> bool:
+        """Ponder acertou: para quando ponder + agora chega a metade do alvo (que cresce se o lance ficar instável)."""
+        agora = self.elapsed()
+        return agora >= self._piso and agora + self._credito >= CREDITO_PARADA * self.soft_limit
 
     # ------------------------------------------------------------------
     def register_move_time(self, elapsed_seconds: float) -> None:
