@@ -63,6 +63,7 @@ AVISO_LINHA_CORTADA = ("A última linha do log ficou pela metade (a energia caiu
                        "ignorada: se era o lance do adversário, digite de novo; se era o nosso, o motor pensa de novo.")
 # Escrita no log ao retomar, logo depois da linha cortada (session.LogRetomado): a leitura descarta aquela linha
 EVENTO_LINHA_CORTADA = "A linha anterior ficou pela metade (o programa parou durante a gravação) e não vale."
+EVENTO_RELOGIO_MANTIDO = "Relógio interno mantido após o ajuste do tabuleiro:"  # session.ajustar_tabuleiro
 
 
 # ==============================================================================
@@ -354,8 +355,9 @@ def remontar(lido: LogLido, config_base: dict | None = None) -> dict | None:
             jogar(lance, {"nosso": board.turn == nossa_cor, "origem": "MANUAL", "tempo": 0.0,
                           "avaliacao": None, "profundidade": 0})
             fim = None
-        elif evento.startswith(("Relógio sincronizado para", "Partida retomada")):
-            m = re.search(r"(?:sincronizado para|relógio) (\d+(?:\.\d+)?)s(?: \(adversário (\d+(?:\.\d+)?)s\))?", evento)
+        elif evento.startswith(("Relógio sincronizado para", "Partida retomada", EVENTO_RELOGIO_MANTIDO)):
+            m = re.search(r"(?:sincronizado para|relógio|tabuleiro:) (\d+(?:\.\d+)?)s(?: \(adversário (\d+(?:\.\d+)?)s\))?",
+                          evento)
             if m:
                 tm.sync_clocks(float(m.group(1)), float(m.group(2)) if m.group(2) else None)
         elif evento.startswith("Custo do operador ajustado para"):

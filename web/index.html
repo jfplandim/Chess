@@ -168,17 +168,43 @@
   </form>
 </dialog>
 
-<dialog id="dlg-posicao" class="largo">
+<dialog id="dlg-posicao" class="editor">
   <form method="dialog" id="form-posicao">
-    <h3>Corrigir a posição</h3>
-    <p>O tabuleiro físico é a referência. Cole ou digite o FEN da posição real.</p>
+    <h3>Ajustar o tabuleiro</h3>
+    <p>O tabuleiro físico é a referência. Deixe este tabuleiro igual ao da mesa: escolha uma ferramenta e clique nas casas.
+      Casas com contorno estão diferentes do sistema.</p>
+    <div class="editor-corpo">
+      <div id="editor-tabuleiro" class="tabuleiro-editor"></div>
+      <div class="editor-lado">
+        <div class="ferramentas" id="ferramentas">
+          <button type="button" data-ferramenta="mover" class="ferramenta texto" title="Clique na peça e depois na casa nova">Mover</button>
+          <button type="button" data-ferramenta="apagar" class="ferramenta texto" title="Clique na casa para tirar a peça">Tirar</button>
+          <div class="ferramentas-pecas" id="ferramentas-pecas"></div>
+        </div>
+        <p class="nota">Clique com o botão direito tira a peça da casa.</p>
+        <div class="editor-opcoes">
+          <span>Vez de jogar:</span>
+          <label class="opcao"><input type="radio" name="editor-vez" value="w"> Brancas</label>
+          <label class="opcao"><input type="radio" name="editor-vez" value="b"> Pretas</label>
+        </div>
+        <div class="editor-opcoes">
+          <span>Roque:</span>
+          <label class="opcao" title="Roque pequeno das Brancas"><input type="checkbox" data-roque="K"> O-O brancas</label>
+          <label class="opcao" title="Roque grande das Brancas"><input type="checkbox" data-roque="Q"> O-O-O brancas</label>
+          <label class="opcao" title="Roque pequeno das Pretas"><input type="checkbox" data-roque="k"> O-O pretas</label>
+          <label class="opcao" title="Roque grande das Pretas"><input type="checkbox" data-roque="q"> O-O-O pretas</label>
+        </div>
+        <div id="editor-analise" class="editor-analise"></div>
+      </div>
+    </div>
+    <label class="nota" for="fen">FEN (também dá para colar aqui)</label>
     <input id="fen" class="largo" spellcheck="false">
     <p id="fen-validacao" class="nota"></p>
-    <p class="nota">O histórico de repetição recomeça a partir desta posição.</p>
     <div class="botoes">
       <button type="button" data-fechar>Cancelar</button>
+      <button type="button" id="posicao-atual">Voltar ao sistema</button>
       <button type="button" id="posicao-inicial">Posição inicial</button>
-      <button value="ok" class="primario">Aplicar posição</button>
+      <button value="ok" class="primario" id="posicao-aplicar">Aplicar</button>
     </div>
   </form>
 </dialog>
@@ -261,7 +287,7 @@
         <tr><td><kbd>F2</kbd></td><td>Desfaz o último meio-lance (para o motor se ele estiver pensando)</td></tr>
         <tr><td><kbd>F3</kbd></td><td>Sincroniza com o relógio físico</td></tr>
         <tr><td><kbd>F4</kbd></td><td>Ajustes: operador, fator de tempo, contempt, pondering e som</td></tr>
-        <tr><td><kbd>F5</kbd></td><td>Corrige a posição por FEN (nesta página o F5 não recarrega)</td></tr>
+        <tr><td><kbd>F5</kbd></td><td>Ajusta o tabuleiro igual ao da mesa, clicando nas casas ou por FEN (nesta página o F5 não recarrega)</td></tr>
         <tr><td><kbd>F6</kbd></td><td>Modo economia: metade do tempo por lance</td></tr>
         <tr><td><kbd>F7</kbd></td><td>Avaliação estática da posição, sem busca</td></tr>
         <tr><td><kbd>F8</kbd></td><td>Liga ou desliga o pondering</td></tr>
@@ -271,7 +297,7 @@
       <h4>Situações comuns</h4>
       <ul>
         <li><b>Digitei errado o lance do adversário:</b> Desfazer (F2); o motor para. Digite o lance certo.</li>
-        <li><b>O tabuleiro físico ficou diferente:</b> Posição (F5) e o FEN da posição real.</li>
+        <li><b>O tabuleiro físico ficou diferente:</b> Posição (F5), deixe o tabuleiro igual ao da mesa e aplique. Se a diferença for um lance esquecido ou digitado errado, o sistema desfaz e registra os lances e a súmula continua; senão, troca a posição e o histórico de repetição recomeça.</li>
         <li><b>Relógio (F3):</b> sincronize a cada uns 10 lances. Isso também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho.</li>
         <li><b>Desempate da melhor de 3 (FAQ item 12):</b> vale o tempo restante somado nas três partidas. Em posição morta, Economia (F6) guarda relógio.</li>
         <li><b>Armageddon:</b> o empate classifica as Pretas. Com o motor próprio, o contempt já vem ajustado. Com o Stockfish, a regra do empate imediato: com Pretas, se algum lance empata na hora (repetição, 50 lances, afogamento, material insuficiente), o motor joga esse lance; com Brancas, nunca joga lance que empata na hora nem deixa o adversário empatar no lance seguinte. Sem incremento o relógio acaba sozinho (operador): a tela avisa quantos lances faltam para a bandeira de cada lado.</li>

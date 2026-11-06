@@ -47,9 +47,11 @@ from session import (
     Lance,
     Leitura,
     arquivar_partida_salva,
+    casas_diferentes,
     ler_lance,
     ler_relogio,
     ler_partida_salva,
+    ler_posicao_do_editor,
 )
 
 # ==============================================================================
@@ -265,9 +267,10 @@ class Tabuleiro(Widget):
     """Tabuleiro do ponto de vista da nossa equipe. Clique na peça e depois no destino."""
 
     class CasaClicada(Message):
-        def __init__(self, casa: int) -> None:
+        def __init__(self, casa: int, botao: int = 1) -> None:
             super().__init__()
             self.casa = casa
+            self.botao = botao   # 1 esquerdo, 3 direito
 
     def __init__(self, sessao: GameSession, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -275,7 +278,11 @@ class Tabuleiro(Widget):
         self.simbolos = False  # letras (R, D, T, B, C, P) são nítidas em qualquer fonte de terminal
         self.origem: int | None = None
         self.destinos: set[int] = set()
+        self.diferentes: set[int] = set()   # editor: casas diferentes do sistema
         self.celula = (5, 2)
+
+    def posicao(self) -> chess.Board:
+        return self.sessao.board
 
     def marcar(self, origem: int | None, destinos) -> None:
         self.origem = origem
@@ -295,7 +302,7 @@ class Tabuleiro(Widget):
         return GLIFOS[peca.piece_type] if self.simbolos else LETRAS_PT[peca.piece_type]
 
     def render(self) -> Text:
-        board = self.sessao.board
+        board = self.posicao()
         larg, alt = self.medida(self.size.width, self.size.height)
         self.celula = (larg, alt)
         linha_peca = (alt - 1) // 2          # linha da casa onde fica a letra da peça
@@ -325,6 +332,8 @@ class Tabuleiro(Widget):
                         fundo = CAPTURA_CLARA if clara else CAPTURA_ESCURA
                     if casa == rei_em_xeque:
                         fundo = BANDEIRA
+                    if casa in self.diferentes:
+                        fundo = CAPTURA_CLARA if clara else CAPTURA_ESCURA
                     if peca is not None and abs(sub - linha_peca) <= 1:
                         branca = peca.color == chess.WHITE
                         cor_ficha = FICHA_BRANCA if branca else FICHA_PRETA
@@ -359,7 +368,7 @@ class Tabuleiro(Widget):
             casa = chess.square(coluna_tela, 7 - linha_tela)
         else:
             casa = chess.square(7 - coluna_tela, linha_tela)
-        self.post_message(self.CasaClicada(casa))
+        self.post_message(self.CasaClicada(casa, event.button))
 
 
 # ==============================================================================
@@ -568,46 +577,197 @@ class DialogoAjustes(Dialogo):
         self.dismiss(None)
 
 
+class TabuleiroEditor(Tabuleiro):
+    """O tabuleiro do diálogo F5: mostra a posição sendo montada, não a da partida."""
+
+    def __init__(self, sessao: GameSession, board: chess.Board, **kwargs) -> None:
+        super().__init__(sessao, **kwargs)
+        self.board = board
+
+    def posicao(self) -> chess.Board:
+        return self.board
+
+
+FERRAMENTAS_PECA = [(chess.Piece(t, cor), f"{LETRAS_PT[t] if cor else LETRAS_PT[t].lower()}")
+                    for cor in (chess.WHITE, chess.BLACK)
+                    for t in (chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)]
+
+
 class DialogoPosicao(Dialogo):
+    """
+    F5: o operador deixa o tabuleiro igual ao da mesa (clicando nas casas ou pelo FEN). Antes de
+    aplicar, mostra o que acontece: nada, desfazer/registrar lances (a súmula continua) ou trocar a
+    posição inteira. Devolve (posição, veio_do_editor) ou None.
+    """
+
     def __init__(self, sessao: GameSession) -> None:
         super().__init__()
         self.sessao = sessao
-        self.board: chess.Board | None = sessao.board.copy()
+        self.editado = sessao.board.copy(stack=False)
+        self.do_editor = True
+        self.ferramenta = "mover"   # "mover", "apagar" ou o índice em FERRAMENTAS_PECA
+        self.origem: int | None = None
+        self.alvo: chess.Board | None = self.editado.copy()
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialogo largo"):
-            yield Label("Corrigir a posição", classes="titulo")
-            yield Static("O tabuleiro físico é a referência. Cole ou digite o FEN da posição real.", classes="texto")
-            yield Input(self.sessao.board.fen(), id="fen")
+        with Vertical(classes="dialogo editor"):
+            yield Label("Ajustar o tabuleiro", classes="titulo")
+            yield Static("O tabuleiro físico é a referência. Deixe este tabuleiro igual ao da mesa: escolha a "
+                         "ferramenta e clique nas casas (botão direito tira a peça). Casas avermelhadas estão "
+                         "diferentes do sistema.", classes="texto")
+            with Horizontal(id="editor-corpo"):
+                yield TabuleiroEditor(self.sessao, self.editado, id="editor-tabuleiro")
+                with Vertical(id="editor-lado"):
+                    with Horizontal(classes="ferramentas"):
+                        yield Button("Mover", id="f-mover", classes="ferramenta larga")
+                        yield Button("Tirar", id="f-apagar", classes="ferramenta larga")
+                    for cor, nome in ((chess.WHITE, "Brancas"), (chess.BLACK, "Pretas")):
+                        with Horizontal(classes="ferramentas"):
+                            yield Label(nome, classes="rotulo-ferramenta")
+                            for i, (peca, letra) in enumerate(FERRAMENTAS_PECA):
+                                if peca.color == cor:
+                                    yield Button(letra, id=f"f-{i}", classes="ferramenta")
+                    yield Button("", id="editor-vez", classes="ferramenta larga vez")
+                    yield Static("", id="editor-analise")
+            yield Input(self.editado.fen(), id="fen")
             yield Static("", id="validacao", classes="nota")
-            yield Static("O histórico de repetição recomeça a partir desta posição.", classes="nota")
             with Horizontal(classes="botoes"):
                 yield Button("Cancelar", id="cancelar")
+                yield Button("Voltar ao sistema", id="atual")
                 yield Button("Posição inicial", id="inicial")
-                yield Button("Aplicar posição", id="ok", variant="primary")
+                yield Button("Aplicar", id="ok", variant="primary")
 
     def on_mount(self) -> None:
-        self.query_one("#fen", Input).focus()
-        self._validar(self.query_one("#fen", Input).value)
+        largura, altura = self.app.size.width, self.app.size.height
+        for alt in (3, 2, 1):
+            larg = 2 * alt + 1
+            if 8 * alt + 1 + 17 <= altura and 8 * larg + 3 + 50 <= largura:
+                break
+        tabuleiro = self.query_one(TabuleiroEditor)
+        tabuleiro.styles.width = 8 * larg + 3
+        tabuleiro.styles.height = 8 * alt + 1
+        self._atualizar()
+        self.query_one("#ok", Button).focus()
 
-    def _validar(self, fen: str) -> None:
-        self.board, mensagem = GameSession.validar_fen(fen)
-        cor = FELTRO if self.board is not None else BANDEIRA
-        self.query_one("#validacao", Static).update(Text(mensagem, style=cor))
+    # ---------------------------------------------------------------- estado
+    def _atualizar(self, escrever_fen: bool = True) -> None:
+        if escrever_fen:
+            self.query_one("#fen", Input).value = self.editado.fen()
+        for botao in self.query(".ferramenta"):
+            botao.set_class(botao.id == f"f-{self.ferramenta}", "ativa")
+        self.query_one("#editor-vez", Button).label = f"Vez: {COR_PT[self.editado.turn]} (trocar)"
+        tabuleiro = self.query_one(TabuleiroEditor)
+        tabuleiro.diferentes = {c for c, _, _ in casas_diferentes(self.sessao.board, self.editado)}
+        tabuleiro.marcar(self.origem, [])
+        self._validar()
+
+    def _validar(self) -> None:
+        fen = self.query_one("#fen", Input).value
+        if self.do_editor:
+            board, mensagem = ler_posicao_do_editor(self.sessao.board, fen)
+        else:
+            board, mensagem = GameSession.validar_fen(fen)
+        analise = self.query_one("#editor-analise", Static)
+        self.alvo = board
+        self.query_one("#validacao", Static).update(Text(mensagem, style=FELTRO if board is not None else BANDEIRA))
+        if board is None:
+            analise.update(Text("Ainda não dá para aplicar.", style=BANDEIRA))
+            return
+        a = self.sessao.analisar_ajuste(board)
+        t = Text()
+        if a["tipo"] == "igual":
+            t.append("Igual ao sistema. ", style=f"bold {GRAFITE}")
+            t.append("Nada muda.", style=GRAFITE)
+        elif a["tipo"] == "conciliar":
+            t.append("Explicado por lances. ", style=f"bold {FELTRO}")
+            t.append("Ao aplicar, o sistema vai:\n", style=FELTRO)
+            for passo in a["passos"]:
+                t.append(f"  • {passo}\n", style=MARFIM)
+            t.append(f"Depois, vez das {a['vez']}. A súmula e o histórico de repetição continuam.", style=GRAFITE)
+        else:
+            t.append("Posição nova. ", style=f"bold {LATAO}")
+            t.append(a["texto"], style=LATAO)
+        if a["casas"]:
+            t.append("\nDiferentes: ", style=GRAFITE)
+            t.append(", ".join(f"{c['casa']} ({c['antes']} → {c['depois']})" for c in a["casas"]), style=GRAFITE)
+        analise.update(t)
+
+    # ---------------------------------------------------------------- edição
+    def on_tabuleiro_casa_clicada(self, msg: Tabuleiro.CasaClicada) -> None:
+        msg.stop()
+        casa, b = msg.casa, self.editado
+        ferramenta = "apagar" if msg.botao == 3 else self.ferramenta
+        if ferramenta == "apagar":
+            b.remove_piece_at(casa)
+            self.origem = None
+        elif ferramenta == "mover":
+            if self.origem is None:
+                if b.piece_at(casa) is not None:
+                    self.origem = casa
+                    self.query_one(TabuleiroEditor).marcar(casa, [])
+                return
+            if casa != self.origem:
+                b.set_piece_at(casa, b.remove_piece_at(self.origem))
+            self.origem = None
+        else:
+            peca = FERRAMENTAS_PECA[int(ferramenta)][0]
+            if b.piece_at(casa) == peca:
+                b.remove_piece_at(casa)   # clicar de novo com a mesma peça tira
+            else:
+                b.set_piece_at(casa, peca)
+        self.do_editor = True
+        self._atualizar()
+
+    @on(Button.Pressed, ".ferramenta")
+    def _ferramenta(self, event: Button.Pressed) -> None:
+        event.stop()
+        nome = (event.button.id or "")[2:]
+        if event.button.id == "editor-vez":
+            self.editado.turn = not self.editado.turn
+            self.do_editor = True
+        else:
+            self.ferramenta = nome
+        self.origem = None
+        self._atualizar()
 
     @on(Input.Changed, "#fen")
     def _mudou(self, event: Input.Changed) -> None:
-        self._validar(event.value)
+        if event.value == self.editado.fen():  # o próprio editor escreveu (o evento chega depois)
+            return
+        # FEN digitado vale como está (contadores inclusive); o editor acompanha quando dá para ler
+        try:
+            lido = chess.Board(event.value.strip())
+        except ValueError:
+            lido = None
+        self.do_editor = False
+        if lido is not None:
+            self.editado = lido
+            self.query_one(TabuleiroEditor).board = lido
+            self.origem = None
+            self._atualizar(escrever_fen=False)
+        else:
+            self._validar()
 
     @on(Input.Submitted, "#fen")
     @on(Button.Pressed, "#ok")
     def _aplicar(self, event) -> None:
-        if self.board is not None:
-            self.dismiss(self.board)
+        if self.alvo is not None:
+            self.dismiss((self.alvo.fen(), self.do_editor))
+
+    def _carregar(self, board: chess.Board) -> None:
+        self.editado = board
+        self.query_one(TabuleiroEditor).board = board
+        self.origem = None
+        self.do_editor = True
+        self._atualizar()
+
+    @on(Button.Pressed, "#atual")
+    def _atual(self, event: Button.Pressed) -> None:
+        self._carregar(self.sessao.board.copy(stack=False))
 
     @on(Button.Pressed, "#inicial")
     def _inicial(self, event: Button.Pressed) -> None:
-        self.dismiss(chess.Board())
+        self._carregar(chess.Board())
 
     @on(Button.Pressed, "#cancelar")
     def _cancelar(self, event: Button.Pressed) -> None:
@@ -726,7 +886,7 @@ AJUDA = """\
 | F2 | Desfaz o último meio-lance (para o motor se ele estiver pensando) |
 | F3 | Sincroniza com o relógio físico |
 | F4 | Ajustes: operador, fator de tempo, contempt, pondering, som, peças |
-| F5 | Corrige a posição por FEN (o tabuleiro físico é a referência) |
+| F5 | Ajusta o tabuleiro igual ao da mesa, clicando nas casas ou por FEN (o tabuleiro físico é a referência) |
 | F6 | Modo economia: o motor usa metade do tempo por lance |
 | F7 | Avaliação estática da posição, sem busca |
 | F8 | Liga ou desliga o pondering |
@@ -737,7 +897,7 @@ O rodapé também aceita clique. Se o terminal capturar alguma tecla F (como F1 
 
 ## Situações comuns
 - **Digitei errado o lance do adversário:** F2 desfaz e o motor para. Digite o lance certo.
-- **O tabuleiro físico ficou diferente:** F5 e o FEN da posição real.
+- **O tabuleiro físico ficou diferente:** F5, deixe o tabuleiro igual ao da mesa e aplique. Se a diferença for um lance esquecido ou digitado errado, o sistema desfaz e registra os lances e a súmula continua; senão, troca a posição e o histórico de repetição recomeça.
 - **Relógio (F3):** sincronize a cada uns 10 lances. Isso também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho.
 - **Desempate da melhor de 3 (FAQ item 12):** vale o tempo restante somado nas três partidas. Em posição morta, F6 economiza relógio.
 - **Armageddon:** o empate classifica as Pretas. Com o motor próprio, o contempt já vem ajustado. Com o Stockfish, a regra do empate imediato: com Pretas, se algum lance empata na hora (repetição, 50 lances, afogamento, material insuficiente), o motor joga esse lance; com Brancas, nunca joga lance que empata na hora nem deixa o adversário empatar no lance seguinte. Sem incremento o relógio acaba sozinho (operador): a tela avisa quantos lances faltam para a bandeira de cada lado.
@@ -1440,16 +1600,26 @@ class TelaPartida(Screen):
         self._segurar_motor()
         self.app.push_screen(DialogoPosicao(self.sessao), self._posicao_escolhida)
 
-    def _posicao_escolhida(self, board: chess.Board | None) -> None:
-        if board is None:
+    def _posicao_escolhida(self, escolha: tuple[str, bool] | None) -> None:
+        if escolha is None:
             self._soltar_motor()
             return
-        self._parar_e_depois(lambda: self._aplicar_posicao(board))
+        self._parar_e_depois(lambda: self._aplicar_posicao(*escolha))
 
-    def _aplicar_posicao(self, board: chess.Board) -> None:
-        self.sessao.definir_posicao(board)
-        self.ultimo_nosso = None
-        self.app.notify("Posição atualizada. O histórico de repetição recomeça daqui.", title="Posição")
+    def _aplicar_posicao(self, fen: str, do_editor: bool) -> None:
+        # Lido de novo com o tabuleiro de agora: o motor pode ter jogado enquanto o diálogo estava aberto
+        board, mensagem = (ler_posicao_do_editor(self.sessao.board, fen) if do_editor
+                           else GameSession.validar_fen(fen))
+        if board is None:
+            self.app.notify(mensagem, title="Posição", severity="error")
+            self._entrar_turno_atual()
+            return
+        analise = self.sessao.ajustar_tabuleiro(board)
+        if analise["tipo"] == "igual":
+            self.app.notify("A posição é a mesma do sistema. Nada mudou.", title="Posição")
+        else:
+            self.ultimo_nosso = None
+            self.app.notify(analise["mensagem"], title="Posição", timeout=8)
         self._entrar_turno_atual()
 
     def action_economia(self) -> None:

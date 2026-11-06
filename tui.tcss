@@ -324,6 +324,65 @@ Dialogo, TelaAjuda {
     width: 100%;
 }
 
+/* Editor do tabuleiro (F5) */
+.dialogo.editor {
+    width: 118;
+    max-height: 100%;
+}
+
+#editor-corpo {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#editor-tabuleiro {
+    margin-right: 2;
+}
+
+#editor-lado {
+    width: 1fr;
+    height: auto;
+}
+
+.ferramentas {
+    height: 1;
+    margin-bottom: 1;
+}
+
+.rotulo-ferramenta {
+    width: 9;
+    color: $grafite;
+}
+
+Button.ferramenta {
+    min-width: 5;
+    width: 5;
+    height: 1;
+    margin-right: 1;
+    border: none;
+    background: $borda;
+}
+
+Button.ferramenta.larga {
+    width: auto;
+    min-width: 9;
+    padding: 0 1;
+}
+
+Button.ferramenta.ativa {
+    background: $latao;
+    color: $madeira;
+    text-style: bold;
+}
+
+Button.ferramenta.vez {
+    margin-bottom: 1;
+}
+
+#editor-analise {
+    height: auto;
+}
+
 .botoes {
     height: auto;
     margin-top: 1;

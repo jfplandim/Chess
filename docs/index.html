@@ -321,7 +321,7 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <tr><td><kbd>F2</kbd></td><td>Desfaz o último meio-lance (e para o motor, se ele estiver pensando).</td></tr>
     <tr><td><kbd>F3</kbd></td><td>Sincroniza com o relógio físico (MM:SS).</td></tr>
     <tr><td><kbd>F4</kbd></td><td>Ajustes: segundos do operador, fator de tempo, contempt (no Stockfish, regra do empate imediato), pondering e som.</td></tr>
-    <tr><td><kbd>F5</kbd></td><td>Corrige a posição por FEN. O tabuleiro físico é a referência.</td></tr>
+    <tr><td><kbd>F5</kbd></td><td>Ajusta o tabuleiro igual ao da mesa, clicando nas casas ou por FEN. O tabuleiro físico é a referência.</td></tr>
     <tr><td><kbd>F6</kbd></td><td>Modo economia: o motor usa metade do tempo por lance.</td></tr>
     <tr><td><kbd>F7</kbd></td><td>Avaliação estática da posição, sem busca.</td></tr>
     <tr><td><kbd>F8</kbd></td><td>Liga ou desliga o pondering.</td></tr>
@@ -333,7 +333,7 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
   <table>
     <tr><th>Situação</th><th>O que fazer</th></tr>
     <tr><td>Digitei errado o lance do adversário</td><td><kbd>F2</kbd> desfaz; se o motor já estava pensando, ele para. Digite o lance certo.</td></tr>
-    <tr><td>O tabuleiro físico ficou diferente do programa</td><td><kbd>F5</kbd> e o FEN da posição real. O histórico de repetição recomeça a partir dela.</td></tr>
+    <tr><td>O tabuleiro físico ficou diferente do programa</td><td><kbd>F5</kbd>: deixe o editor igual à mesa (mover, tirar ou colocar peças) e aplique. Se a diferença for lance esquecido, digitado errado ou jogado diferente (até 4 meios-lances desfeitos e 2 jogados), o programa desfaz e registra os lances, e a súmula e o histórico de repetição continuam. Senão, a posição é trocada e o histórico recomeça.</td></tr>
     <tr><td>Tocamos numa peça e tivemos de jogar outro lance</td><td><kbd>F9</kbd>, digite o lance que foi jogado.</td></tr>
     <tr><td>O relógio do programa se afastou do físico</td><td><kbd>F3</kbd> a cada uns 10 lances, com o que o relógio físico mostra. A sincronização também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho e a tela avisa o valor novo. Um valor improvável, como <code>1230</code> no lugar de <code>12:30</code>, pede confirmação; <code>12.30</code> com ponto vale como 12:30.</td></tr>
     <tr><td>Posição morta e a melhor de 3 pode ir para o desempate por tempo</td><td><kbd>F6</kbd>: o desempate soma o tempo restante das três partidas (FAQ item 12).</td></tr>
@@ -500,7 +500,7 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <tr><td><code>main.py</code></td><td>Modo texto, pondering, lance de emergência, retomada e regras de fim de partida usadas por todos.</td></tr>
     <tr><td><code>logger.py</code></td><td>Log obrigatório da banca (FAQ item 9), gravado direto no disco.</td></tr>
     <tr><td><code>uci.py</code></td><td>Protocolo UCI, com a opção <code>Motor</code> (próprio ou Stockfish).</td></tr>
-    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (19 testes: o 12º com o Stockfish, o 13º com a leitura do lance digitado, o 14º com a recalibração do operador, do 15º ao 18º a gestão de tempo do desempate e o Armageddon, e o 19º com a recuperação da partida se o notebook travar ou desligar).</td></tr>
+    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (20 testes: o 12º com o Stockfish, o 13º com a leitura do lance digitado, o 14º com a recalibração do operador, do 15º ao 18º a gestão de tempo do desempate e o Armageddon, o 19º com a recuperação da partida se o notebook travar ou desligar, e o 20º com o ajuste do tabuleiro pela mesa).</td></tr>
     <tr><td><code>tools/</code></td><td><code>match.py</code> (motor contra motor, com Elo), <code>simular_torneio.py</code> (partidas pela mesma sessão das interfaces, com relógio físico e operador simulados), <code>baixar_stockfish.py</code>, <code>bench_stockfish.py</code> (escolher o notebook), <code>baixar_syzygy.py</code>, <code>bench.py</code> e os scripts de Texel Tuning.</td></tr>
   </table>
 

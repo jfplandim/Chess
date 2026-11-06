@@ -803,6 +803,108 @@ def run_all_tests() -> None:
         (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger) = salvos
         shutil.rmtree(pasta, ignore_errors=True)
 
+    # 20. Ajuste do tabuleiro pela mesa (F5): conciliação por lances ou posição nova
+    print("\n[TESTE 20] Ajuste do tabuleiro pela mesa: lance esquecido, digitado errado, peça fora do lugar...")
+    import recuperacao as rec
+
+    pasta = tempfile.mkdtemp(prefix="teste_ajuste_")
+    salvos = (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger)
+    sessao_mod.LOGS_DIR = logs = os.path.join(pasta, "logs")  # não mexe na partida salva de verdade (logs/)
+    sessao_mod.ARQUIVO_SALVO = os.path.join(logs, "partida_em_andamento.json")
+    sessao_mod.ARQUIVO_SALVO_ANTERIOR = os.path.join(logs, "partida_salva_anterior.json")
+    sessao_mod.MatchLogger = functools.partial(MatchLogger, base_dir=pasta)
+    try:
+        s = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.WHITE, motor="proprio", operador=4.0, ponder=False))
+
+        def nosso(uci):
+            m = chess.Move.from_uci(uci)
+            s.registrar_nosso(SearchResult(m, 20, 12, 5000, 0.0, [uci], "SEARCH", 14, [m]))
+
+        def mesa(*ucis, desfazer=0):
+            """A posição que está na mesa: a do sistema com lances desfeitos e outros jogados."""
+            b = s.board.copy()
+            for _ in range(desfazer):
+                b.pop()
+            for u in ucis:
+                b.push_uci(u)
+            return b
+
+        for u in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4"):
+            (nosso if s.nossa_vez else lambda x: s.registrar_adversario(chess.Move.from_uci(x)))(u)
+        relogio = s.time_manager.remaining_time, s.time_manager.opponent_time
+
+        # Igual: nada muda
+        assert s.ajustar_tabuleiro(s.board.copy(stack=False))["tipo"] == "igual"
+        # No editor o operador só moveu a peça do adversário, sem trocar a vez: a explicação troca a vez
+        b = s.board.copy(stack=False)
+        b.set_piece_at(chess.F6, b.remove_piece_at(chess.G8))
+        a = s.analisar_ajuste(sessao_mod.posicao_do_editor(s.board, b))
+        assert a["tipo"] == "conciliar" and a["passos"] == ["registrar g8f6 (Nf6) das Pretas"] and a["vez"] == "Brancas", a
+        # Lance do adversário esquecido: registra, a súmula continua
+        a = s.ajustar_tabuleiro(sessao_mod.posicao_do_editor(s.board, mesa("g8f6")))
+        assert a["tipo"] == "conciliar" and [l.uci for l in s.lances][-1] == "g8f6" and len(s.lances) == 6, a
+        assert s.lances[-1].origem == "ADVERSARIO"
+        # Lance do adversário digitado errado (f6 em vez de Bc5): desfaz e registra o certo
+        a = s.ajustar_tabuleiro(mesa("f8c5", desfazer=1))
+        assert a["tipo"] == "conciliar" and a["passos"][0].startswith("desfazer g8f6"), a
+        assert [l.uci for l in s.lances] == ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5"]
+        # Nosso lance movido diferente do anunciado (Bb5 no lugar de Bc4) e o adversário já respondeu
+        a = s.ajustar_tabuleiro(mesa("f1b5", "a7a6", desfazer=2))
+        assert a["tipo"] == "conciliar" and s.lances[-2].origem == "MANUAL" and s.lances[-2].uci == "f1b5", a
+        # Lance registrado que não foi jogado na mesa: desfazer vale mais que peças voltando
+        a = s.ajustar_tabuleiro(mesa(desfazer=2))
+        assert a["passos"] == ["desfazer a7a6 (a6)", "desfazer f1b5 (Bb5)"], a["passos"]
+        assert len(s.lances) == 4 and len(s.board.move_stack) == 4
+        # O relógio interno não ganha incremento nem perde operador pelos lances refeitos
+        tm = s.time_manager
+        # (saldo: +1 lance deles esquecido, -1 nosso e -1 deles registrados sem terem sido jogados)
+        assert abs(tm.remaining_time - (relogio[0] - (tm.increment - tm.operator_overhead))) < 1e-6, tm.remaining_time
+        assert abs(tm.opponent_time - relogio[1]) < 1e-6, tm.opponent_time
+        estado = s.board.fen(), [l.uci for l in s.lances], round(tm.remaining_time, 1), round(tm.opponent_time, 1)
+
+        # O log basta para remontar depois dos ajustes (notebook desligou)
+        d = rec.remontar(rec.ler_log(s.logger.log_path))
+        assert d is not None and not d["problema"] and d["fen_inicial"] == chess.STARTING_FEN, d and d["problema"]
+        b = chess.Board()
+        for u in d["lances"]:
+            b.push_uci(u)
+        assert b.fen() == estado[0] and d["lances"] == estado[1]
+        assert (round(d["relogio_nosso"], 1), round(d["relogio_adv"], 1)) == estado[2:], (d["relogio_nosso"], d["relogio_adv"])
+
+        # Peça fora do lugar sem explicação por lances: posição nova; contador dos 50 lances volta a 0
+        s.board.halfmove_clock = 7
+        b = s.board.copy(stack=False)
+        b.remove_piece_at(chess.A2)
+        alvo = sessao_mod.posicao_do_editor(s.board, b)
+        assert alvo.halfmove_clock == 0 and alvo.fullmove_number == s.board.fullmove_number
+        a = s.ajustar_tabuleiro(alvo)
+        assert a["tipo"] == "nova" and s.board.fen() == alvo.fen() and not s.lances
+        # Peça só trocada de casa (sem captura nem peão): o contador continua
+        s.board.halfmove_clock = 7
+        b = s.board.copy(stack=False)
+        b.set_piece_at(chess.D3, b.remove_piece_at(chess.F3))
+        assert sessao_mod.posicao_do_editor(s.board, b).halfmove_clock == 7
+        # Roque que a posição não permite sai sozinho; en passant impossível também
+        b = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq e6 0 1")
+        b.remove_piece_at(chess.H1)
+        limpo = sessao_mod.posicao_do_editor(chess.Board(), b)
+        assert limpo.castling_xfen() == "Qkq" and limpo.ep_square is None, limpo.fen()
+        # A busca de conciliação cabe em uma tela de meio-jogo
+        meio = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 9")
+        for u in ("f1d3", "d5c4", "d3c4", "a7a6"):
+            meio.push_uci(u)
+        t0 = time.perf_counter()
+        sem = meio.copy(stack=False)
+        sem.remove_piece_at(chess.A2)
+        assert sessao_mod.conciliar(meio, sem) is None
+        gasto = time.perf_counter() - t0
+        assert gasto < 1.5, gasto
+        print(f"  -> [OK] Lance esquecido, digitado errado e jogado diferente conciliados (súmula e relógio "
+              f"certos, log remonta igual); peça fora do lugar vira posição nova; busca sem explicação {gasto * 1000:.0f} ms")
+    finally:
+        (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger) = salvos
+        shutil.rmtree(pasta, ignore_errors=True)
+
     print("\n======================================================================")
     print(f"   TODOS OS TESTES PASSARAM ({time.time() - t_start:.0f}s). MOTOR PRONTO PARA O TORNEIO!")
     print("======================================================================")

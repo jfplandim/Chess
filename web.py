@@ -44,7 +44,16 @@ from motor_stockfish import (
     verificar_stockfish,
 )
 from recuperacao import resumo_da_partida
-from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva, ler_relogio
+from session import (
+    COR_PT,
+    Config,
+    GameSession,
+    arquivar_partida_salva,
+    ler_lance,
+    ler_partida_salva,
+    ler_posicao_do_editor,
+    ler_relogio,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_WEB = os.path.join(BASE_DIR, "web")
@@ -458,21 +467,47 @@ class Controlador:
             self._avisar("Ajustes salvos.", "ok")
         return {"ok": True}
 
+    def _posicao_pedida(self, dados: dict, s: GameSession | None) -> tuple[chess.Board | None, str]:
+        """FEN digitado ou montado no editor (editor=True: roque, en passant e contadores completados)."""
+        fen = str(dados.get("fen", ""))
+        if s is not None and dados.get("editor"):
+            return ler_posicao_do_editor(s.board, fen)
+        return GameSession.validar_fen(fen)
+
+    @staticmethod
+    def _analise_para_pagina(analise: dict) -> dict:
+        return {chave: analise.get(chave) for chave in ("tipo", "texto", "casas", "passos", "vez")}
+
     def validar_fen(self, dados: dict) -> dict:
-        board, mensagem = GameSession.validar_fen(str(dados.get("fen", "")))
-        return {"valido": board is not None, "mensagem": mensagem}
+        with self.trava:
+            s = self.sessao
+            board, mensagem = self._posicao_pedida(dados, s)
+            if board is None:
+                return {"valido": False, "mensagem": mensagem}
+            resposta = {"valido": True, "mensagem": mensagem, "fen": board.fen()}
+            if s is not None:
+                resposta["analise"] = self._analise_para_pagina(s.analisar_ajuste(board))
+            return resposta
 
     def posicao(self, dados: dict) -> dict:
-        board, mensagem = GameSession.validar_fen(str(dados.get("fen", "")))
+        with self.trava:
+            board, mensagem = self._posicao_pedida(dados, self._exigir_partida())
         if board is None:
             raise ErroOperador(mensagem)
         self._parar_motor()
         with self.trava:
-            self._exigir_partida().definir_posicao(board)
-            self.ultimo_nosso = None
-            self._avisar("Posição atualizada. O histórico de repetição recomeça daqui.", "info", "Posição")
+            s = self._exigir_partida()
+            board, mensagem = self._posicao_pedida(dados, s)  # de novo: o motor pode ter jogado nesse meio-tempo
+            if board is None:
+                raise ErroOperador(mensagem)
+            analise = s.ajustar_tabuleiro(board)
+            if analise["tipo"] == "igual":
+                self._avisar("A posição é a mesma do sistema. Nada mudou.", "info", "Posição")
+            else:
+                self.ultimo_nosso = None
+                self._avisar(analise["mensagem"], "info", "Posição")
             self._entrar_turno(auto=False)
-        return {"ok": True}
+        return {"ok": True, "analise": self._analise_para_pagina(analise)}
 
     def economia(self, dados: dict) -> dict:
         with self.trava:

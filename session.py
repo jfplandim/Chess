@@ -46,6 +46,7 @@ from recuperacao import (  # os mesmos arquivos para as três interfaces (os tes
     ARQUIVO_SALVO,
     ARQUIVO_SALVO_ANTERIOR,
     EVENTO_LINHA_CORTADA,
+    EVENTO_RELOGIO_MANTIDO,
     LOGS_DIR,
     VERSAO_SALVO,
     achar_log,
@@ -357,6 +358,169 @@ def arquivar_partida_salva() -> None:
             os.replace(ARQUIVO_SALVO, ARQUIVO_SALVO_ANTERIOR)
         except OSError:
             pass
+
+
+# ==============================================================================
+# Ajuste do tabuleiro pela mesa (F5)
+# ==============================================================================
+# O tabuleiro físico é a referência (FAQ Item 10). Quando o do sistema fica diferente, o operador
+# monta a posição real no editor. Antes de trocar a posição inteira (o que zera o histórico de
+# repetição e a súmula), procuramos uma explicação curta: a posição da mesa é a do sistema com até
+# CONCILIAR_DESFAZER meios-lances desfeitos e CONCILIAR_LANCES lances legais jogados depois (lance do
+# adversário digitado errado, lance esquecido, nosso lance movido diferente do anunciado). Assim o
+# histórico, a súmula e o log da banca continuam certos.
+CONCILIAR_DESFAZER = 4
+CONCILIAR_LANCES = 2
+NOME_PECA_COR = {True: "branco", False: "preto"}
+
+
+def nome_peca(peca: chess.Piece | None) -> str:
+    if peca is None:
+        return "vazia"
+    nome = PIECE_NAMES_PT[peca.piece_type].lower()
+    feminino = peca.piece_type in (chess.QUEEN, chess.ROOK)
+    cor = ("branca" if feminino else "branco") if peca.color == chess.WHITE else ("preta" if feminino else "preto")
+    return f"{nome} {cor}"
+
+
+_MOTIVOS_INVALIDA = [
+    (chess.STATUS_EMPTY, "o tabuleiro está vazio"),
+    (chess.STATUS_NO_WHITE_KING, "falta o rei das Brancas"),
+    (chess.STATUS_NO_BLACK_KING, "falta o rei das Pretas"),
+    (chess.STATUS_TOO_MANY_KINGS, "há rei a mais"),
+    (chess.STATUS_TOO_MANY_WHITE_PAWNS, "mais de 8 peões das Brancas"),
+    (chess.STATUS_TOO_MANY_BLACK_PAWNS, "mais de 8 peões das Pretas"),
+    (chess.STATUS_PAWNS_ON_BACKRANK, "peão na primeira ou na última fileira"),
+    (chess.STATUS_TOO_MANY_WHITE_PIECES, "mais de 16 peças das Brancas (falta tirar alguma?)"),
+    (chess.STATUS_TOO_MANY_BLACK_PIECES, "mais de 16 peças das Pretas (falta tirar alguma?)"),
+    (chess.STATUS_OPPOSITE_CHECK, "quem não joga está em xeque (confira de quem é a vez)"),
+    (chess.STATUS_BAD_CASTLING_RIGHTS, "roque que a posição não permite"),
+    (chess.STATUS_INVALID_EP_SQUARE, "casa de en passant impossível"),
+    (chess.STATUS_TOO_MANY_CHECKERS, "xeque impossível (peças demais dando xeque)"),
+    (chess.STATUS_IMPOSSIBLE_CHECK, "xeque impossível"),
+]
+
+
+def motivo_invalida(board: chess.Board) -> str:
+    status = board.status()
+    motivos = [texto for bit, texto in _MOTIVOS_INVALIDA if status & bit]
+    return "; ".join(motivos) if motivos else "confira os reis, os peões e quem joga"
+
+
+def mesma_posicao(a: chess.Board, b: chess.Board) -> bool:
+    """Mesmas peças nas mesmas casas e o mesmo lado para jogar (é o que se confere na mesa)."""
+    return a.turn == b.turn and a.board_fen() == b.board_fen()
+
+
+def casas_diferentes(antes: chess.Board, depois: chess.Board) -> list[tuple[int, chess.Piece | None, chess.Piece | None]]:
+    """(casa, peça no sistema, peça na mesa) de cada casa que mudou, na ordem a1..h8."""
+    return [
+        (casa, antes.piece_at(casa), depois.piece_at(casa))
+        for casa in chess.SQUARES
+        if antes.piece_at(casa) != depois.piece_at(casa)
+    ]
+
+
+@dataclass
+class Conciliacao:
+    """Como ir do tabuleiro do sistema ao da mesa sem perder o histórico."""
+
+    desfazer: list[chess.Move]          # meios-lances desfeitos, do último para o primeiro
+    lances: list[chess.Move]            # lances jogados depois, na ordem
+    passos: list[str]                   # o mesmo em texto, para o operador conferir
+    vez: bool = chess.WHITE             # quem joga depois
+
+
+def conciliar(board: chess.Board, alvo: chess.Board,
+              max_desfazer: int = CONCILIAR_DESFAZER, max_lances: int = CONCILIAR_LANCES) -> Conciliacao | None:
+    """
+    Menor explicação (desfeitos + jogados) que leva o tabuleiro do sistema às peças da mesa, ou None.
+    A mesa não mostra de quem é a vez: vale primeiro a explicação que termina com a vez marcada no
+    editor; se não houver, a menor com a outra vez (quem move a peça do adversário no editor não
+    precisa trocar a vez; a interface mostra de quem fica a vez para conferir com o relógio).
+    Em empate de tamanho, a que desfaz mais. Até 4 desfeitos e 2 lances: ~6 mil lances testados.
+    """
+    pilha = list(board.move_stack)
+    limite = min(max_desfazer, len(pilha))
+    alvo_pecas = alvo.board_fen()
+
+    def procurar(b: chess.Board, restam: int, caminho: list[chess.Move]) -> list[chess.Move] | None:
+        if restam == 0:
+            return list(caminho) if b.board_fen() == alvo_pecas else None
+        for move in list(b.legal_moves):
+            b.push(move)
+            caminho.append(move)
+            achou = procurar(b, restam - 1, caminho)
+            caminho.pop()
+            b.pop()
+            if achou is not None:
+                return achou
+        return None
+
+    outra_vez = None   # explicação que termina com a vez trocada (a vez depende só da paridade do total)
+    for total in range(1, limite + max_lances + 1):
+        vez_certa = (board.turn if total % 2 == 0 else not board.turn) == alvo.turn
+        if not vez_certa and outra_vez is not None:
+            continue
+        # Em empate, desfazer primeiro: lance registrado que não foi jogado é mais provável que peças voltando
+        for n_desfazer in range(min(total, limite), -1, -1):
+            n_lances = total - n_desfazer
+            if n_lances > max_lances:
+                continue
+            b = board.copy()
+            desfeitos = [b.pop() for _ in range(n_desfazer)]
+            lances = procurar(b, n_lances, [])
+            if lances is None:
+                continue
+            passos = []
+            descricao = board.copy()
+            for move in desfeitos:
+                descricao.pop()
+                passos.append(f"desfazer {move.uci()} ({descricao.san(move)})")
+            for move in lances:
+                passos.append(f"registrar {move.uci()} ({descricao.san(move)}) das {COR_PT[descricao.turn]}")
+                descricao.push(move)
+            plano = Conciliacao(desfazer=desfeitos, lances=lances, passos=passos, vez=descricao.turn)
+            if vez_certa:
+                return plano
+            outra_vez = plano
+            break
+    return outra_vez
+
+
+def posicao_do_editor(base: chess.Board, editada: chess.Board) -> chess.Board:
+    """
+    Completa o que o editor não mostra: roques que a posição não permite saem, en passant só se
+    for possível, e o contador dos 50 lances continua o do sistema, a não ser que tenha sumido peça
+    ou mudado peão (houve captura ou lance de peão que o sistema não viu: o contador volta a 0).
+    Contar a mais encerraria a partida antes da hora (empate automático, FAQ Item 12).
+    """
+    b = editada.copy(stack=False)
+    b.castling_rights = b.clean_castling_rights()
+    if b.ep_square is not None and not b.has_legal_en_passant():
+        b.ep_square = None
+    b.fullmove_number = base.fullmove_number
+    mudou_material = chess.popcount(b.occupied) != chess.popcount(base.occupied) or b.pawns != base.pawns
+    b.halfmove_clock = 0 if mudou_material else base.halfmove_clock
+    return b
+
+
+def ler_posicao_do_editor(base: chess.Board, fen: str) -> tuple[chess.Board | None, str]:
+    """
+    FEN montado no editor: completa roque, en passant e contadores (posicao_do_editor) e só então
+    valida. Se o único problema for a vez (quem não joga está em xeque, como depois de registrar no
+    editor um lance com xeque sem trocar a vez), troca a vez sozinho.
+    """
+    try:
+        board = posicao_do_editor(base, chess.Board(fen.strip()))
+    except ValueError as exc:
+        return None, f"FEN inválido: {exc}"
+    if not board.is_valid() and board.status() == chess.STATUS_OPPOSITE_CHECK:
+        board.turn = not board.turn
+        board = posicao_do_editor(base, board)
+    if not board.is_valid():
+        return None, "Posição impossível: " + motivo_invalida(board) + "."
+    return board, f"Posição válida, {chess.popcount(board.occupied)} peças no tabuleiro."
 
 
 # ==============================================================================
@@ -720,7 +884,7 @@ class GameSession:
         except ValueError as exc:
             return None, f"FEN inválido: {exc}"
         if not board.is_valid():
-            return None, "Posição impossível. Confira os reis, peões na primeira ou última fileira e quem joga."
+            return None, "Posição impossível: " + motivo_invalida(board) + "."
         return board, f"{COR_PT[board.turn]} jogam, {chess.popcount(board.occupied)} peças no tabuleiro."
 
     def definir_posicao(self, board: chess.Board) -> None:
@@ -737,6 +901,80 @@ class GameSession:
         self.logger.log_event(f"Posição ajustada via FEN: {board.fen()}")
         self._verificar_fim()
         self.salvar()
+
+    def analisar_ajuste(self, alvo: chess.Board) -> dict:
+        """
+        O que acontece se a posição da mesa (alvo) for aplicada, para a interface mostrar antes:
+        tipo "igual" (nada muda), "conciliar" (desfaz/registra lances e mantém o histórico) ou
+        "nova" (troca a posição inteira, o histórico de repetição recomeça).
+        """
+        diferencas = casas_diferentes(self.board, alvo)
+        casas = [
+            {"casa": chess.square_name(c), "antes": nome_peca(a), "depois": nome_peca(d)}
+            for c, a, d in diferencas
+        ]
+        detalhes_iguais = (alvo.castling_rights == self.board.castling_rights
+                           and alvo.ep_square == self.board.ep_square
+                           and alvo.halfmove_clock == self.board.halfmove_clock)
+        if mesma_posicao(self.board, alvo):
+            if detalhes_iguais:
+                return {"tipo": "igual", "casas": casas, "passos": [],
+                        "texto": "É a mesma posição do sistema. Nada muda."}
+            return {"tipo": "nova", "casas": casas, "passos": [],
+                    "texto": "Mesmas peças, mas roque, en passant ou contador diferentes: a posição é trocada "
+                             "e o histórico de repetição recomeça."}
+        plano = conciliar(self.board, alvo) if alvo.board_fen() != self.board.board_fen() else None
+        if plano is not None:
+            return {"tipo": "conciliar", "casas": casas, "passos": plano.passos, "plano": plano,
+                    "vez": COR_PT[plano.vez],
+                    "texto": "Explicado por lances: " + "; ".join(plano.passos)
+                             + f". Depois, vez das {COR_PT[plano.vez]}. A súmula e o histórico de repetição continuam."}
+        return {"tipo": "nova", "casas": casas, "passos": [],
+                "texto": "Não é explicado por poucos lances: a posição é trocada e o histórico de "
+                         f"repetição recomeça daqui. Vez das {COR_PT[alvo.turn]} (confira acima)."}
+
+    def ajustar_tabuleiro(self, alvo: chess.Board) -> dict:
+        """Aplica a posição da mesa (ver analisar_ajuste). Devolve a análise com a mensagem final."""
+        analise = self.analisar_ajuste(alvo)
+        if analise["tipo"] == "igual":
+            return analise
+        if analise["tipo"] == "nova":
+            self.definir_posicao(alvo)
+            analise["mensagem"] = "Posição atualizada. O histórico de repetição recomeça daqui."
+            return analise
+        plano: Conciliacao = analise["plano"]
+        self.ponder_ctrl.stop_ponder()
+        nosso_antes, adv_antes = self.time_manager.remaining_time, self.time_manager.opponent_time
+        self.logger.log_event(f"Ajuste do tabuleiro pela mesa: {'; '.join(plano.passos)}")
+        cores_desfeitas = []
+        if plano.desfazer:
+            b = self.board.copy()
+            for _ in plano.desfazer:
+                b.pop()
+                cores_desfeitas.append(b.turn)
+            self.desfazer(len(plano.desfazer))
+        cores_jogadas = []
+        for move in plano.lances:
+            cores_jogadas.append(self.board.turn)
+            if self.board.turn == self.our_color:
+                self.registrar_manual(move)
+            else:
+                self.registrar_adversario(move)
+        # O relógio interno já contou os lances desfeitos e não deve contar de novo os refeitos (o
+        # pensamento já passou). Só muda o saldo de lances de cada lado: lance esquecido ganha o
+        # incremento (e, se nosso, perde o operador); lance registrado que não foi jogado devolve.
+        tm = self.time_manager
+        nossos = cores_jogadas.count(self.our_color) - cores_desfeitas.count(self.our_color)
+        deles = cores_jogadas.count(not self.our_color) - cores_desfeitas.count(not self.our_color)
+        nosso = max(0.5, nosso_antes + nossos * (tm.increment - tm.operator_overhead))
+        adv = max(0.5, adv_antes + deles * tm.increment)
+        tm.sync_clocks(nosso, adv)
+        self.logger.log_event(f"{EVENTO_RELOGIO_MANTIDO} {nosso:.1f}s (adversário {adv:.1f}s)")
+        self.inicio_turno = time.perf_counter()
+        self.calibracao_valida = False
+        self.salvar()
+        analise["mensagem"] = "Tabuleiro ajustado: " + "; ".join(plano.passos) + ". Confira o relógio (F3)."
+        return analise
 
     def suspeita_relogio(self, nosso: float, adv: float | None) -> str | None:
         """
