@@ -39,6 +39,7 @@ from motor_stockfish import (
     recursos_do_nivel,
     verificar_stockfish,
 )
+from recuperacao import resumo_da_partida
 from session import (
     COR_PT,
     Config,
@@ -862,10 +863,7 @@ class TelaInicio(Screen):
         self._atualizar()
 
     def _texto_salvo(self) -> str:
-        cfg = self.salvo["config"]
-        cor = COR_PT[cfg["our_color"] == "w"]
-        n = len(self.salvo["lances"])
-        return f"Há uma partida salva: jogando de {cor}, {n} meios-lances, salva às {self.salvo['salvo_em']}."
+        return resumo_da_partida(self.salvo)  # o mesmo texto no navegador (recuperacao.py)
 
     def _ritmo(self) -> str:
         botao = self.query_one("#ritmo", RadioSet).pressed_button

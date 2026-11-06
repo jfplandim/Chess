@@ -27,6 +27,7 @@ from evaluation import evaluate_board
 from time_manager import TimeManager, ler_relogio
 from search import SearchEngine, SearchResult
 from logger import MatchLogger
+from recuperacao import detalhes_da_partida, evento_configuracao
 from motor_stockfish import (
     MotorIndisponivel,
     avisos_de_energia,
@@ -334,34 +335,57 @@ def print_help_menu() -> None:
         "  ponder               : Ativa/Desativa o cálculo no turno do adversário (Pondering)\n"
         "  avaliar              : Mostra a avaliação estática detalhada da posição atual\n"
         "  log                  : Mostra o caminho do arquivo .log/.txt oficial para a banca\n"
-        "  sair / quit          : Encerra a partida e salva o log final\n"
+        "  sair / quit          : Encerra: resultado do árbitro (v, d, e) ou sair e retomar depois (r)\n"
         "==============================================================================\n"
     )
 
 
-def run_tournament_cli() -> None:
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
-    print("==============================================================================")
-    print("              CHESS CHALLENGE III - ICEV 2026 - MOTOR OFICIAL                 ")
-    print("      Stockfish + gestão de tempo da equipe | reserva: motor próprio (Python) ")
-    print("==============================================================================")
-    stockfish = verificar_stockfish()  # sem Stockfish, oferece instalar; senão segue com o motor próprio
+def _oferecer_retomada():
+    """
+    Se a última partida foi interrompida (o notebook travou, desligou ou a janela fechou), oferece retomar.
+    É a mesma recuperação da TUI e do navegador (recuperacao.py): pelo arquivo salvo ou, se ele se perdeu,
+    pelo log da banca. Devolve a GameSession retomada ou None para uma partida nova.
+    """
+    from session import GameSession, arquivar_partida_salva, ler_partida_salva  # tardio: session importa este arquivo
+
+    dados = ler_partida_salva()
+    if not dados:
+        return None
+    print("\n" + "!" * 78)
+    for linha in detalhes_da_partida(dados):
+        print(f"  {linha}")
+    print("!" * 78)
+    try:
+        resposta = input("\nRetomar esta partida? [S/n]: ").strip().lower()
+    except EOFError:
+        return None
+    if resposta in ("n", "nao", "não", "no"):
+        arquivar_partida_salva()
+        print("  Partida nova. A interrompida continua no log dela (python recuperacao.py --listar).")
+        return None
+    try:
+        sessao = GameSession.retomar(dados)
+    except Exception as exc:  # noqa: BLE001 - arquivo salvo ou log com problema: o jogo não pode parar
+        print(f"\n  [ERRO] Não deu para retomar: {exc}\n  Começando uma partida nova (corrija a posição com 'fen').")
+        return None
+    # Daqui em diante o modo texto grava só o log da banca: um arquivo salvo parado nesta jogada faria a
+    # próxima retomada avisar que ele ficou atrasado. Sem ele, a recuperação usa o log direto.
+    arquivar_partida_salva()
+    return sessao
+
+
+def _perguntar_config(stockfish):
+    """Perguntas da partida nova (cor, ritmo, pondering, operador e motor); devolve a Config da session.py."""
+    from session import Config  # import tardio: session.py importa este arquivo
 
     # 1. Seleção da Cor da Equipe
-    our_color = chess.WHITE
     while True:
         choice = input("\nQual a cor da nossa equipe nesta partida? [1] BRANCAS (padrão) | [2] PRETAS: ").strip().lower()
         if choice in ("", "1", "b", "brancas", "w", "white"):
             our_color = chess.WHITE
-            color_name = "BRANCAS"
             break
         elif choice in ("2", "p", "pretas", "black"):
             our_color = chess.BLACK
-            color_name = "PRETAS"
             break
         print("Opção inválida. Digite 1 para Brancas ou 2 para Pretas.")
 
@@ -373,23 +397,23 @@ def run_tournament_cli() -> None:
     print("  [4] Personalizado")
     tc_choice = input("Escolha [1/2/3/4] (Enter = 1): ").strip()
 
+    ritmo, init_min, inc_sec, inc_armageddon = "oficial", 15.0, 10.0, 0.0
     if tc_choice == "2":
-        init_min, inc_sec = 25.0, 0.0
+        ritmo = "edital"
     elif tc_choice == "3":
-        init_min = 5.0 if our_color == chess.WHITE else 4.0
+        ritmo = "armageddon"  # 5 min com Brancas, 4 com Pretas (Config.relogio)
         try:
             # O FAQ 12 não fala em incremento no Armageddon: confirme com o árbitro
-            inc_sec = max(0.0, float(input("  Incremento do Armageddon em segundos (Enter = 0): ").strip() or "0"))
+            inc_armageddon = max(0.0, float(input("  Incremento do Armageddon em segundos (Enter = 0): ").strip() or "0"))
         except ValueError:
-            inc_sec = 0.0
+            inc_armageddon = 0.0
     elif tc_choice == "4":
+        ritmo = "personalizado"
         try:
             init_min = float(input("  Minutos iniciais (ex: 15): ").strip() or "15")
             inc_sec = float(input("  Incremento em segundos (ex: 10): ").strip() or "10")
         except ValueError:
             init_min, inc_sec = 15.0, 10.0
-    else:
-        init_min, inc_sec = 15.0, 10.0
 
     # 3. Pondering (FAQ Item 13)
     ponder_input = input("\nAtivar Pondering (calcular durante turno adversário - FAQ Item 13)? [S/n]: ").strip().lower()
@@ -411,50 +435,117 @@ def run_tournament_cli() -> None:
         escolha = input("\nDesempenho do Stockfish: [1] Ultra, força total (padrão) | [2] Médio | [3] Baixo: ").strip()
         desempenho = {"2": "medio", "3": "baixo"}.get(escolha, "ultra")
 
-    # Inicializa componentes
-    board = chess.Board()
-    time_manager = TimeManager(
-        initial_minutes=init_min,
-        increment_seconds=inc_sec,
-        move_overhead=0.5,
-        operator_overhead=operator_overhead,
-    )
-    try:
-        engine = criar_motor(motor, desempenho)
-    except MotorIndisponivel as erro:
-        print(f"\n  {erro}\n  Seguindo com o motor próprio.")
-        engine = criar_motor("proprio")
+    return Config(our_color=our_color, ritmo=ritmo, minutos=init_min, incremento=inc_sec, ponder=use_ponder,
+                  operador=operator_overhead, motor=motor, desempenho=desempenho, inc_armageddon=inc_armageddon)
+
+
+def _conferir_relogio_retomado(time_manager: TimeManager, logger: MatchLogger) -> None:
+    """Partida retomada: o relógio físico manda, porque o tempo com o programa fechado não está em arquivo nenhum."""
+    fmt = TimeManager.format_clock
+    print("\n  Confira os relógios físicos: o tempo em que o programa ficou fechado não está em arquivo nenhum.")
+    while True:
+        try:
+            texto = input(f"  Relógios agora, nosso e do adversário (ex.: 12:30 11:45). Enter mantém "
+                          f"{fmt(time_manager.remaining_time)} e {fmt(time_manager.opponent_time)}: ").strip()
+        except EOFError:
+            return
+        if not texto:
+            return
+        partes = texto.split()
+        try:
+            nosso = ler_relogio(partes[0])
+            adv = ler_relogio(partes[1]) if len(partes) > 1 else None
+        except ValueError as exc:
+            print(f"  [ERRO] {exc}")
+            continue
+        time_manager.sync_clocks(nosso, adv)
+        logger.log_event(f"Relógio sincronizado para {nosso:.1f}s" + (f" (adversário {adv:.1f}s)" if adv is not None else ""))
+        return
+
+
+def run_tournament_cli() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    print("==============================================================================")
+    print("              CHESS CHALLENGE III - ICEV 2026 - MOTOR OFICIAL                 ")
+    print("      Stockfish + gestão de tempo da equipe | reserva: motor próprio (Python) ")
+    print("==============================================================================")
+    stockfish = verificar_stockfish()  # sem Stockfish, oferece instalar; senão segue com o motor próprio
+
+    # Partida interrompida (o notebook travou, desligou ou a janela fechou): retomada, pula as perguntas
+    sessao = _oferecer_retomada()
+    if sessao is None:
+        config = _perguntar_config(stockfish)
+        our_color = config.our_color
+        color_name = "BRANCAS" if our_color == chess.WHITE else "PRETAS"
+        armageddon = config.ritmo == "armageddon"
+        init_min, inc_sec = config.relogio()
+        use_ponder = config.ponder
+        operator_overhead = config.operador
+
+        # Inicializa componentes
+        board = chess.Board()
+        time_manager = TimeManager(
+            initial_minutes=init_min,
+            increment_seconds=inc_sec,
+            move_overhead=0.5,
+            operator_overhead=operator_overhead,
+        )
+        try:
+            engine = criar_motor(config.motor, config.desempenho)
+        except MotorIndisponivel as erro:
+            print(f"\n  {erro}\n  Seguindo com o motor próprio.")
+            engine = criar_motor("proprio")
+            config.motor = "proprio"
+        engine.our_color = our_color  # contempt contado a partir da nossa cor, inclusive no ponder
+        logger = MatchLogger(team_color=color_name)
+        logger.log_event(f"Motor: {descrever_motor(engine)}")
+        logger.log_event(evento_configuracao(config))  # com ela, o log sozinho basta para retomar a partida
+        if armageddon and not isinstance(engine, SearchEngine):
+            # Armageddon (FAQ Item 12): o Stockfish não tem contempt; a regra do empate imediato faz as
+            # Pretas jogarem o lance que empata na hora e as Brancas fugirem dele (motor_stockfish.py)
+            engine.regra_empate = "evitar" if our_color == chess.WHITE else "buscar"
+            logger.log_event("Armageddon: empate classifica as Pretas (FAQ Item 12). Regra do empate imediato: "
+                             + ("Brancas evitam o lance que empata na hora." if our_color == chess.WHITE
+                                else "Pretas jogam o lance que empata na hora."))
+        elif armageddon:
+            # Armageddon (FAQ Item 12): empate classifica as Pretas. Com Brancas o empate é derrota
+            # (evitar); com Pretas vale a classificação (buscar repetição e finais empatados).
+            engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
+            logger.log_event(f"Armageddon: contempt {engine.contempt:+d} cp (empate classifica as Pretas - FAQ Item 12)")
+    else:
+        # Motor, contempt do Armageddon, relógios e ajustes já vêm da partida retomada (session.py)
+        config = sessao.config
+        our_color = sessao.our_color
+        color_name = "BRANCAS" if our_color == chess.WHITE else "PRETAS"
+        armageddon = config.ritmo == "armageddon"
+        init_min, inc_sec = config.relogio()
+        use_ponder = sessao.use_ponder
+        board, time_manager, engine, logger = sessao.board, sessao.time_manager, sessao.engine, sessao.logger
+        operator_overhead = time_manager.operator_overhead
+        aviso = sessao.tomar_aviso()
+        if aviso:
+            print(f"\n  [ATENÇÃO] {aviso}")
+        _conferir_relogio_retomado(time_manager, logger)
     usa_stockfish = not isinstance(engine, SearchEngine)
-    engine.our_color = our_color  # contempt contado a partir da nossa cor, inclusive no ponder
-    logger = MatchLogger(team_color=color_name)
-    logger.log_event(f"Motor: {descrever_motor(engine)}")
     ponder_ctrl = PonderController(engine)
-    if tc_choice == "3" and usa_stockfish:
-        # Armageddon (FAQ Item 12): o Stockfish não tem contempt; a regra do empate imediato faz as
-        # Pretas jogarem o lance que empata na hora e as Brancas fugirem dele (motor_stockfish.py)
-        engine.regra_empate = "evitar" if our_color == chess.WHITE else "buscar"
-        logger.log_event("Armageddon: empate classifica as Pretas (FAQ Item 12). Regra do empate imediato: "
-                         + ("Brancas evitam o lance que empata na hora." if our_color == chess.WHITE
-                            else "Pretas jogam o lance que empata na hora."))
-    elif tc_choice == "3":
-        # Armageddon (FAQ Item 12): empate classifica as Pretas. Com Brancas o empate é derrota
-        # (evitar); com Pretas vale a classificação (buscar repetição e finais empatados).
-        engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
-        logger.log_event(f"Armageddon: contempt {engine.contempt:+d} cp (empate classifica as Pretas - FAQ Item 12)")
 
     print("\n------------------------------------------------------------------------------")
-    print(f"  Partida Iniciada! Jogando de: {color_name}")
+    print(f"  Partida {'Retomada' if sessao is not None else 'Iniciada'}! Jogando de: {color_name}")
     print(f"  Relógio Configurado         : {init_min:.0f} min + {inc_sec:.0f}s/lance")
     print(f"  Pondering (FAQ Item 13)     : {'ATIVADO' if use_ponder else 'DESATIVADO'}")
     print(f"  Custo do operador por lance : {operator_overhead:.1f}s (descontado do relógio interno)")
     print(f"  {'Motor':<28}: {descrever_motor(engine)}")
     if usa_stockfish:
-        if tc_choice == "3":
+        if armageddon:
             regra = "evitam o lance que empata na hora" if our_color == chess.WHITE else "jogam o lance que empata na hora"
             print(f"  {'Armageddon':<28}: empate classifica as Pretas; regra do empate imediato: {'Brancas' if our_color == chess.WHITE else 'Pretas'} {regra}")
     else:
         print(f"  {'Contempt (empate)':<28}: {engine.contempt:+d} cp"
-              + ("  (Armageddon: empate classifica as Pretas)" if tc_choice == "3" else ""))
+              + ("  (Armageddon: empate classifica as Pretas)" if armageddon else ""))
     print("  DICA: sincronize o relógio a cada ~10 lances com 'tempo MM:SS [MM:SS]'.")
     print(f"  Log Oficial (FAQ Item 9)    : {logger.log_path}")
     print(f"  Espelho Rápido p/ Banca     : {logger.txt_mirror_path}")
@@ -536,7 +627,7 @@ def run_tournament_cli() -> None:
                                          f"da equipe. Detalhe: {exc}")
                         engine = SearchEngine()
                         engine.our_color = our_color
-                        if tc_choice == "3":
+                        if armageddon:
                             engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
                         ponder_ctrl = PonderController(engine)
                         result = engine.search_best_move(
@@ -620,9 +711,21 @@ def run_tournament_cli() -> None:
 
             # --- Tratamento de Comandos Administrativos / Emergência ---
             if cmd_lower in ("sair", "quit", "exit"):
-                confirm = input("Tem certeza que deseja encerrar a partida? [s/N]: ").strip().lower()
-                if confirm in ("s", "sim", "y", "yes"):
-                    logger.log_event("Partida encerrada manualmente pelo operador.")
+                # Como o Encerrar da TUI: resultado do árbitro (abandono, acordo, bandeira) encerra a partida;
+                # "r" fecha o programa e a partida fica para retomar (recuperacao.py)
+                escolha = input("Encerrar: [v] vencemos | [d] perdemos | [e] empate (resultado do árbitro) | "
+                                "[r] sair e retomar depois | Enter volta à partida: ").strip().lower()
+                if escolha in ("v", "d", "e"):
+                    if escolha == "e":
+                        placar = "1/2-1/2"
+                    else:
+                        placar = "1-0" if (escolha == "v") == (our_color == chess.WHITE) else "0-1"
+                    logger.log_event(f"Resultado declarado pelo operador: {placar}")
+                    print(f"\n  Resultado {placar} registrado. Log para a banca: {logger.log_path}")
+                    break
+                if escolha == "r":
+                    logger.log_event("Partida interrompida pelo operador: pode ser retomada (recuperacao.py).")
+                    print("\n  Partida guardada. Para continuar: python main.py (ou tui.py, web.py) e Retomar.")
                     break
                 continue
 
@@ -638,6 +741,7 @@ def run_tournament_cli() -> None:
             if cmd_lower == "ponder":
                 use_ponder = not use_ponder
                 print(f"\n  [CONFIG] Pondering agora está: {'ATIVADO' if use_ponder else 'DESATIVADO'}")
+                logger.log_event(f"Pondering {'ativado' if use_ponder else 'desativado'}")  # para retomar igual
                 continue
 
             if cmd_lower == "avaliar":
@@ -670,7 +774,8 @@ def run_tournament_cli() -> None:
                         print(
                             f"\n  [RELÓGIO SINCRONIZADO] Nosso tempo: {TimeManager.format_clock(time_manager.remaining_time)}"
                         )
-                        logger.log_event(f"Relógio sincronizado para {our_s:.1f}s")
+                        extra = f" (adversário {opp_s:.1f}s)" if opp_s is not None else ""
+                        logger.log_event(f"Relógio sincronizado para {our_s:.1f}s{extra}")
                     except ValueError:
                         print("  [ERRO] Formato inválido. Use: tempo 12:30 ou tempo 750")
                 else:
@@ -792,6 +897,13 @@ def run_tournament_cli() -> None:
         except KeyboardInterrupt:
             ponder_ctrl.stop_ponder()
             print("\n\n  [INTERRUPÇÃO DETECTADA] Digite 'sair' se quiser encerrar ou continue digitando o lance.")
+        except EOFError:
+            # Sem entrada (terminal fechado): sair em vez de repetir o erro sem parar, enchendo o log da banca.
+            # A partida está no log e pode ser retomada em qualquer interface (recuperacao.py).
+            ponder_ctrl.stop_ponder()
+            logger.log_event("Entrada do terminal fechada: a partida pode ser retomada (recuperacao.py).")
+            print("\n\n  [ENTRADA FECHADA] A partida ficou no log e pode ser retomada: python main.py")
+            break
         except Exception as exc:
             ponder_ctrl.stop_ponder()
             print(f"\n  [RECUPERAÇÃO AUTOMÁTICA DE ERRO]: {exc}")
