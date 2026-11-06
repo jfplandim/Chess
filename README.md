@@ -47,7 +47,9 @@ autoria da equipe.
 | Nossa gestão de tempo x a do próprio Stockfish (o mesmo Stockfish dos dois lados, 12 partidas, 40 s + 0,4 s, 0,16 s de operador descontado por lance dos dois lados) | **+0 =12 −0** |
 | Tempo médio por lance | **0,74 s** (nosso) x 1,14 s (Stockfish): 34% menos |
 | Menor relógio em todo o match | **19,1 s** (nosso) x 1,5 s (Stockfish) |
-| `python test_engine.py`, teste 12 (livro, limite rígido, táticas, lances legais, ponder, reabertura) | passa |
+| Ensaio no ritmo real, 15+10, pela sessão do torneio, contra o Stockfish puro com a gestão de tempo dele. Operador real de 5 s por lance (o motor configurado com 4 s) e F3 a cada 10 lances | empate por tripla repetição em 29 lances |
+| Relógio físico no fim desse ensaio | **10:23** (nosso) x 3:46 (Stockfish); a calibração subiu o operador para 5,0 s no 10º lance |
+| `python test_engine.py`, teste 12 (livro, limite rígido, táticas, lances legais, ponder, reabertura, queda e travamento no meio da busca) | passa |
 
 Entre dois Stockfish quase tudo empata, e o confronto empatado se decide pela soma do tempo restante
 (FAQ Item 12). Doze partidas não medem pequenas diferenças de força, mas mostram que economizar
@@ -145,8 +147,11 @@ Sem a pasta `syzygy/` os dois motores funcionam normalmente (só não usam as ta
 ```bash
 python test_engine.py
 ```
-São 12 testes. O 12º confere o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas,
-lances legais, pondering e reabertura se o processo cair.
+São 14 testes:
+- **12º:** o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas, lances legais,
+  pondering e o que acontece se o processo cair ou travar no meio da busca.
+- **13º:** a leitura do lance digitado pelo operador.
+- **14º:** a recalibração do custo do operador pelo relógio físico.
 
 ### 5. Partida oficial (100% offline)
 ```bash
@@ -243,6 +248,13 @@ formato nos dois modos.
      sem incremento isso é o que evita perder por tempo.
 4. A cada ~10 lances, sincronize com o relógio físico: F3 na interface, ou
    `tempo 11:42 12:05` no modo texto (nosso tempo e, opcional, o do adversário).
+   - **Na interface, a sincronização também mede o operador.** Se ele estiver mais lento do que
+     o configurado, o custo por lance sobe sozinho, e a tela avisa o valor novo.
+   - **Valor improvável pede confirmação** (Enter de novo), como `1230` no lugar de `12:30`. O
+     ponto vale como dois-pontos: `12.30` é 12:30.
+   - **Sem sincronizar,** o motor não tem como saber que o operador demora mais. A simulação de
+     150 lances de 15+10 mostra o risco: com o operador 2 s mais lento que o configurado, ele perde
+     por tempo perto do lance 60.
 5. O log exigido pelo FAQ Item 9 é gravado a cada lance em `logs/partida_*.log`
    e espelhado em `logs/ultima_partida_banca.txt`.
 6. Na interface, desfazer, posição, ajustes e os demais comandos ficam nas teclas F1 a F9
@@ -284,7 +296,7 @@ formato nos dois modos.
 
 ## Guia para a Arguição da Banca
 
-O motor do torneio é o Stockfish com a **nossa gestão de tempo**: as perguntas A a D são as
+O motor do torneio é o Stockfish com a **nossa gestão de tempo**: as perguntas A a E são as
 principais. As seções 1 a 11 explicam o motor próprio (reserva), todo de autoria da equipe.
 
 ### A. "O que é de vocês, se o Stockfish faz a busca e a avaliação?"
@@ -318,7 +330,19 @@ dos dois lados, foram 12 empates em 12 partidas, e a nossa gestão de tempo gast
 por lance: o nosso relógio nunca ficou abaixo de 19 s, e o da gestão de tempo do Stockfish chegou
 a 1,5 s.
 
-### D. "E a licença do Stockfish?"
+### D. "E se o Stockfish cair ou travar no meio da partida?"
+Ele roda como processo separado. Por isso uma falha dele não derruba a interface, e o relógio
+não fica parado:
+- **Caiu no meio da busca:** vale o melhor lance que ele já tinha mostrado. Se caiu antes de
+  mostrar algum, o processo é reaberto e a busca continua no tempo que sobra do lance.
+- **Travou:** a busca para no limite rígido. Se o `bestmove` não chegar em 1,5 s depois do
+  `stop`, o processo é derrubado e vale o melhor lance até ali.
+- **Não reabre:** por exemplo, o executável sumiu. A partida segue com o motor próprio, a tela
+  avisa e o log registra a troca.
+
+O teste 12 derruba e congela o processo de propósito no meio da busca.
+
+### E. "E a licença do Stockfish?"
 GPLv3. Usamos o programa oficial sem alterar o código: ele roda como processo separado e conversa
 por UCI. O executável não está no repositório; é baixado por `tools/baixar_stockfish.py` da
 versão oficial `sf_19`, com conferência do SHA-256. A rede neural embutida nele é peso de
@@ -406,6 +430,18 @@ bastam, os lances quietos (a parte cara) muitas vezes nem são gerados.
   raiz falha baixo (*fail-low*), o motor pensa mais; se o lance está estável há várias
   iterações, economiza.
 - Lance único (ex.: única fuga de xeque) é jogado na hora.
+- **Zona de sobrevivência:** com poucos lances de folga no relógio (abaixo de ~42 s em 15+10
+  com 4 s de operador), o alvo de cada lance cai para metade do incremento líquido (incremento
+  menos operador) mais 1/25 do relógio, e o limite rígido não passa do incremento líquido
+  inteiro. O resto do incremento reconstrói o relógio a cada lance. Numa partida simulada de
+  150 lances, o relógio para em ~40 s e não cai mais, mesmo se a busca for até o limite em todo
+  lance.
+- **O operador é medido pelo relógio físico:** a cada sincronização (F3), a diferença entre o
+  relógio interno e o físico, dividida pelos lances desde a última, mostra quanto o operador
+  demora a mais por lance. O custo configurado sobe para esse valor.
+  - Só sobe, porque pensar menos é o lado seguro. Um relógio parado pelo árbitro não faz o motor
+    pensar mais.
+  - Desfazer, FEN e retomada invalidam a medida até a próxima sincronização.
 
 ### 7. Empates, repetição e "contempt"
 Detectamos repetição com uma pilha própria de chaves (só até o último lance irreversível)

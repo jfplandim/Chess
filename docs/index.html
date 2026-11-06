@@ -236,6 +236,7 @@ dd { margin: 2px 0 0; }
     <tr><th>Medição</th><th>Resultado</th></tr>
     <tr><td>Stockfish 19 no notebook da equipe, 4 threads e 2048 MB (<code>tools/bench_stockfish.py</code>, 05/11/2026)</td><td class="num">1,9 milhão de nós/s</td></tr>
     <tr><td>Nossa gestão de tempo contra a do próprio Stockfish (o mesmo Stockfish dos dois lados, 40 s + 0,4 s, operador simulado)</td><td class="num">+0 =12 −0, com 34% menos tempo por lance</td></tr>
+    <tr><td>Ensaio no ritmo real (15 + 10) pela sessão do torneio, contra o Stockfish puro. Operador real de 5 s por lance, motor configurado com 4 s, <kbd>F3</kbd> a cada 10 lances (05/11/2026)</td><td class="num">empate em 29 lances; relógio final 10:23 contra 3:46; operador recalibrado para 5,0 s</td></tr>
     <tr><td>Motor próprio, versão 2 contra a versão anterior (40 partidas, 20 s + 0,2 s, mesma gestão de tempo)</td><td class="num">+38 =2 −0</td></tr>
     <tr><td>Motor próprio: profundidade em 5 s, posições de meio-jogo</td><td class="num">12 a 17 (antes 5 a 8)</td></tr>
     <tr><td>Motor próprio: velocidade no notebook da equipe, modo de energia normal (medida em 04/11/2026)</td><td class="num">16 a 18 mil nós/s</td></tr>
@@ -334,10 +335,10 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <tr><td>Digitei errado o lance do adversário</td><td><kbd>F2</kbd> desfaz; se o motor já estava pensando, ele para. Digite o lance certo.</td></tr>
     <tr><td>O tabuleiro físico ficou diferente do programa</td><td><kbd>F5</kbd> e o FEN da posição real. O histórico de repetição recomeça a partir dela.</td></tr>
     <tr><td>Tocamos numa peça e tivemos de jogar outro lance</td><td><kbd>F9</kbd>, digite o lance que foi jogado.</td></tr>
-    <tr><td>O relógio do programa se afastou do físico</td><td><kbd>F3</kbd> a cada uns 10 lances, com o que o relógio físico mostra.</td></tr>
+    <tr><td>O relógio do programa se afastou do físico</td><td><kbd>F3</kbd> a cada uns 10 lances, com o que o relógio físico mostra. A sincronização também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho e a tela avisa o valor novo. Um valor improvável, como <code>1230</code> no lugar de <code>12:30</code>, pede confirmação; <code>12.30</code> com ponto vale como 12:30.</td></tr>
     <tr><td>Posição morta e a melhor de 3 pode ir para o desempate por tempo</td><td><kbd>F6</kbd>: o desempate soma o tempo restante das três partidas (FAQ item 12).</td></tr>
     <tr><td>Armageddon</td><td>Com o motor próprio, o contempt já vem ajustado: com Brancas evita o empate; com Pretas, procura. O Stockfish não tem contempt e avalia o empate como 0.</td></tr>
-    <tr><td>O Stockfish não abriu</td><td>Na tela inicial, escolha o motor próprio (<kbd>M</kbd>) e jogue com ele. Se o Stockfish cair no meio da partida, ele reabre sozinho no lance seguinte.</td></tr>
+    <tr><td>O Stockfish não abriu</td><td>Na tela inicial, escolha o motor próprio (<kbd>M</kbd>) e jogue com ele. Se o Stockfish cair no meio da partida, vale o melhor lance que ele já tinha; se ele não reabrir, a partida segue com o motor próprio e a tela avisa.</td></tr>
     <tr><td>O árbitro declarou o resultado</td><td>Encerrar e escolha o resultado; ele vai para o log.</td></tr>
     <tr><td>O notebook travou ou a janela fechou</td><td>Rode a interface de novo e escolha <strong>Retomar partida</strong>. Depois confira os relógios.</td></tr>
   </table>
@@ -483,7 +484,7 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
     <tr><td><code>main.py</code></td><td>Modo texto, pondering, lance de emergência e regras de fim de partida usadas por todos.</td></tr>
     <tr><td><code>logger.py</code></td><td>Log obrigatório da banca (FAQ item 9).</td></tr>
     <tr><td><code>uci.py</code></td><td>Protocolo UCI, com a opção <code>Motor</code> (próprio ou Stockfish).</td></tr>
-    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (12 testes, o último com o Stockfish).</td></tr>
+    <tr><td><code>test_engine.py</code></td><td>Bateria de validação (14 testes: o 12º com o Stockfish, o 13º com a leitura do lance digitado e o 14º com a recalibração do operador).</td></tr>
     <tr><td><code>tools/</code></td><td><code>match.py</code> (motor contra motor, com Elo), <code>baixar_stockfish.py</code>, <code>bench_stockfish.py</code> (escolher o notebook), <code>baixar_syzygy.py</code>, <code>bench.py</code> e os scripts de Texel Tuning.</td></tr>
   </table>
 
@@ -542,9 +543,13 @@ python main.py   <span class="com"># modo texto, reserva</span></code></pre></li
   <ul>
     <li><strong>Um processo só:</strong> o Stockfish abre uma vez por execução e é reaproveitado nas partidas
       seguintes (com <code>ucinewgame</code>).</li>
-    <li><strong>Se cair, reabre:</strong> se o processo do Stockfish cair, a busca seguinte abre outro sozinha
-      (testado no teste 12, derrubando o processo de propósito). Se a busca falhar no meio, a interface joga o
-      lance de emergência.</li>
+    <li><strong>Caiu no meio da busca:</strong> vale o melhor lance que ele já tinha mostrado. Se caiu antes de
+      mostrar algum, o processo é reaberto e a busca continua no tempo que sobra do lance.</li>
+    <li><strong>Travou:</strong> a busca para no limite rígido. Se o <code>bestmove</code> não chegar em 1,5 s depois
+      do <code>stop</code>, o processo é derrubado e vale o melhor lance até ali. A busca seguinte abre outro.</li>
+    <li><strong>Não reabre</strong> (por exemplo, o executável sumiu): a partida segue com o motor próprio, sem
+      parar o relógio. A tela avisa e o log registra a troca.</li>
+    <li>O teste 12 derruba e congela o processo de propósito, no meio da busca e entre buscas.</li>
     <li><strong>Saída limpa:</strong> o Stockfish é fechado antes de o programa terminar, sem travar a saída.</li>
   </ul>
 
@@ -655,6 +660,17 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
     <li><strong>Instabilidade:</strong> se o melhor lance muda, a nota cai ou a raiz falha baixo, o motor pensa mais;
       com o lance estável, economiza. Lance único é jogado na hora.</li>
     <li>O <strong>fator de tempo</strong> (F4) e o <strong>modo economia</strong> (F6) multiplicam o orçamento.</li>
+    <li><strong>Zona de sobrevivência:</strong> com poucos lances de folga no relógio (abaixo de ~42 s em 15 + 10 com
+      4 s de operador), o alvo de cada lance cai para metade do incremento líquido (incremento menos operador) mais
+      1/25 do relógio, e o limite rígido não passa do incremento líquido inteiro. O resto do incremento reconstrói o
+      relógio a cada lance. Numa partida simulada de 150 lances, o relógio para em ~40 s e não cai mais, mesmo com a
+      busca indo até o limite em todo lance.</li>
+    <li><strong>O operador é medido pelo relógio físico:</strong> a cada sincronização (<kbd>F3</kbd>), a diferença
+      entre o relógio interno e o físico, dividida pelos lances desde a anterior, mostra quanto o operador demora a
+      mais por lance, e o custo configurado sobe para esse valor. Só sobe (pensar menos é o lado seguro): um relógio
+      parado pelo árbitro não faz o motor pensar mais. Desfazer, FEN e retomada invalidam a medida até a próxima
+      sincronização. Sem sincronizar, o motor não tem como saber: na simulação, com o operador 2 s mais lento que o
+      configurado, ele perde por tempo perto do lance 60.</li>
   </ul>
 
   <h3>Livro e tablebases</h3>
@@ -727,14 +743,21 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
     <li>SEE em trocas simples.</li>
     <li>Táticas: mates em 1 e 2, sacrifício de dama com mate (WAC.001) e garfo de cavalo.</li>
     <li>Empates: repetição, material insuficiente e afogamento.</li>
-    <li>Gestão de tempo: nunca orça mais do que o relógio tem (15 + 10, 25 + 0, Armageddon, apuro).</li>
+    <li>Gestão de tempo: nunca orça mais do que o relógio tem (15 + 10, 25 + 0, Armageddon, apuro) e, em 150 lances
+      de 15 + 10, o relógio não cai abaixo da zona de sobrevivência.</li>
     <li>A busca sempre devolve lance legal (60 posições aleatórias, 0,15 s).</li>
     <li>Pondering inicia, para rápido e não concorre com a busca.</li>
     <li>Log da banca gravado com os campos exigidos.</li>
     <li>Contempt contado a partir da nossa cor no Armageddon.</li>
     <li>Stockfish com a nossa gestão de tempo: livro primeiro, limite rígido com relógio baixo, as táticas do
-      teste 5, lances legais em posições aleatórias, pondering parando rápido e reabertura depois de derrubar o
-      processo de propósito. Sem o Stockfish instalado, o teste só avisa.</li>
+      teste 5, lances legais em posições aleatórias, pondering parando rápido, reabertura depois de derrubar o
+      processo de propósito e o melhor lance até a queda quando ele cai ou trava no meio da busca. Sem o Stockfish
+      instalado, o teste só avisa.</li>
+    <li>Leitura do lance digitado: todo lance legal em UCI (maiúsculas, espaço ou hífen) vira exatamente aquele lance;
+      lance nulo (<code>0000</code>, <code>--</code>), casa repetida (<code>e2e2</code>) e SAN ambíguo
+      (<code>bxc5</code> com peão e bispo) viram erro; nenhum texto derruba a interface.</li>
+    <li>Custo do operador recalibrado pela sincronização: sobe com o operador lento, não baixa com o relógio parado e
+      não mede depois de desfazer.</li>
   </ol>
 
   <h3>Nossa gestão de tempo contra a do Stockfish</h3>
@@ -784,7 +807,9 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
       Confira o motor <strong>Stockfish</strong> com desempenho <strong>Ultra</strong> e escolha a cor, o ritmo (15 + 10 ou Armageddon),
       o pondering ligado e os segundos que o operador gasta por lance. Meçam esse tempo no treino: o padrão é 4 s.
       Na partida, o topo da tela tem que mostrar “Stockfish 19 (Ultra)”.</li>
-    <li>A cada uns 10 lances, sincronize com o relógio físico (<kbd>F3</kbd>).</li>
+    <li>A cada uns 10 lances, sincronize com o relógio físico (<kbd>F3</kbd>). Isso também mede o operador: se ele
+      estiver mais lento do que o configurado, o custo sobe sozinho. Sem sincronizar, um operador mais lento que o
+      configurado pode fazer o motor perder por tempo numa partida longa.</li>
     <li>No fim, entregue à banca o log da partida (o diálogo de fim mostra o caminho).</li>
   </ol>
 </section>
@@ -792,7 +817,7 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
 <!-- ================================================================ -->
 <section id="arguicao">
   <h2>Arguição da banca</h2>
-  <p>Perguntas que a banca deve fazer, com respostas curtas. As quatro primeiras são sobre o motor do torneio;
+  <p>Perguntas que a banca deve fazer, com respostas curtas. As cinco primeiras são sobre o motor do torneio;
     as demais, sobre o motor próprio (reserva). Os detalhes estão nas seções acima.</p>
   <details>
     <summary>O que é de vocês, se o Stockfish faz a busca e a avaliação?</summary>
@@ -815,6 +840,13 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
       restante nas três partidas (item 12). No nosso teste com o mesmo Stockfish dos dois lados, deu 12 empates em
       12 partidas, e a nossa gestão de tempo gastou 34% menos tempo por lance: o nosso relógio nunca ficou abaixo
       de 19 s, e o da gestão de tempo do Stockfish chegou a 1,5 s.</p></div>
+  </details>
+  <details>
+    <summary>E se o Stockfish cair ou travar no meio da partida?</summary>
+    <div><p>Ele roda como processo separado, então a falha dele não derruba a interface. Se cair no meio da busca,
+      vale o melhor lance que ele já tinha mostrado; se cair antes, o processo é reaberto no tempo que sobra do lance.
+      Se travar, a busca para no limite rígido e, sem <code>bestmove</code> em 1,5 s, o processo é derrubado. Se não
+      reabrir, a partida segue com o motor próprio. O teste 12 derruba e congela o processo de propósito.</p></div>
   </details>
   <details>
     <summary>E a licença do Stockfish?</summary>
@@ -863,7 +895,9 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
   <details>
     <summary>Como o software lida com o atraso do anúncio verbal?</summary>
     <div><p>A gestão de tempo desconta os segundos que o operador gasta por lance (ajustável), o pondering usa o
-      tempo do adversário e o relógio pode ser sincronizado com o físico a qualquer momento.</p></div>
+      tempo do adversário e o relógio pode ser sincronizado com o físico a qualquer momento. Cada sincronização mede
+      o operador de verdade: se ele estiver mais lento do que o configurado, o custo sobe. Com o relógio baixo, a zona
+      de sobrevivência mira em metade do incremento líquido (mais 1/25 do relógio), e o resto reconstrói o relógio.</p></div>
   </details>
 </section>
 
@@ -877,10 +911,10 @@ python tools/bench_stockfish.py --desempenho medio   # ou baixo</code></pre>
     <tr><td>A página mostra “Sem conexão com o web.py”</td><td>O servidor fechou: rode <code>python web.py</code> de novo e escolha Retomar partida.</td></tr>
     <tr><td>Alguma tecla F não funciona no terminal</td><td>O terminal pode capturá-la (o GNOME Terminal usa o F1): clique no rodapé.</td></tr>
     <tr><td>O motor ficou lento</td><td>Confira a tomada e o modo de energia (a abertura da interface avisa); feche outros programas. <code>python tools/bench_stockfish.py</code> mede a velocidade do Stockfish e <code>python tools/bench.py</code>, a do motor próprio.</td></tr>
-    <tr><td>A busca falhou no meio da partida</td><td>A interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log; <kbd>F2</kbd> desfaz se a equipe preferir outro.</td></tr>
+    <tr><td>A busca falhou no meio da partida</td><td>Só acontece se nem o motor próprio conseguir buscar. A interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log; <kbd>F2</kbd> desfaz se a equipe preferir outro.</td></tr>
     <tr><td>“Tablebases Syzygy não encontradas”</td><td>Só um aviso: o motor joga sem elas. Para usar, rode <code>python tools/baixar_syzygy.py</code> antes do evento.</td></tr>
     <tr><td>“Stockfish não encontrado”</td><td>Ao abrir, a interface oferece instalar: responda Enter, com internet (ou rode <code>python tools/baixar_stockfish.py</code>). No dia, sem internet, responda <code>n</code> e jogue com o motor próprio.</td></tr>
-    <tr><td>O Stockfish travou ou caiu</td><td>Ele reabre sozinho no lance seguinte. Se a busca falhar no meio, a interface joga o lance de emergência e avisa.</td></tr>
+    <tr><td>O Stockfish travou ou caiu</td><td>Nada a fazer: vale o melhor lance que ele já tinha e o processo reabre sozinho. Se não reabrir, a partida segue com o motor próprio e a tela avisa.</td></tr>
     <tr><td>A interface não abre de jeito nenhum</td><td>Use o modo texto: <code>python main.py</code>.</td></tr>
   </table>
 </section>
