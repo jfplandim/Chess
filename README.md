@@ -150,13 +150,14 @@ Sem a pasta `syzygy/` os dois motores funcionam normalmente (só não usam as ta
 ```bash
 python test_engine.py
 ```
-São 19 testes:
+São 20 testes:
 - **12º:** o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas, lances legais,
   pondering e o que acontece se o processo cair ou travar no meio da busca.
 - **13º:** a leitura do lance digitado pelo operador.
 - **14º:** a recalibração do custo do operador pelo relógio físico.
 - **15º a 18º:** crédito do ponder, empate morto, regra do empate imediato e Armageddon com incremento.
 - **19º:** a recuperação da partida se o notebook travar ou desligar (seção abaixo).
+- **20º:** o ajuste do tabuleiro pela mesa (F5): lances conciliados, posição nova e remontagem pelo log.
 
 ### 5. Partida oficial (100% offline)
 ```bash
@@ -218,7 +219,7 @@ Feita para a mesa do torneio: o operador não digita comandos, só o lance do ad
 | F2 | Desfaz o último meio-lance (e para o motor, se ele estiver pensando) |
 | F3 | Sincroniza com o relógio físico (MM:SS) |
 | F4 | Ajustes: operador, fator de tempo, contempt (no Stockfish, regra do empate imediato), pondering, som e peças |
-| F5 | Corrige a posição por FEN (o tabuleiro físico é a referência) |
+| F5 | Ajusta o tabuleiro igual ao da mesa: clicando nas casas ou por FEN (o tabuleiro físico é a referência; veja abaixo) |
 | F6 | Modo economia: metade do tempo por lance (desempate por tempo, FAQ Item 12) |
 | F7 | Avaliação estática da posição |
 | F8 | Liga ou desliga o pondering |
@@ -228,6 +229,36 @@ Feita para a mesa do torneio: o operador não digita comandos, só o lance do ad
 O rodapé aceita clique, útil se o terminal capturar alguma tecla F (o GNOME Terminal usa o
 F1). Se o notebook travar ou desligar, veja a seção abaixo. Maximize o terminal (o ideal é
 pelo menos 120 × 36). O log da banca tem o mesmo formato nos dois modos.
+
+---
+
+## Se o tabuleiro do programa ficar diferente do da mesa (F5)
+
+O tabuleiro físico é a referência (FAQ Item 10). F5 abre um editor com o tabuleiro do programa:
+
+- **Mover:** clique na peça e depois na casa onde ela está na mesa.
+- **Tirar:** clique na casa (ou botão direito em qualquer ferramenta).
+- **Peças das Brancas e das Pretas:** clique na casa para colocar; de novo na mesma casa, tira.
+- **Vez de jogar** e **roque** (o roque que a posição não permite sai sozinho). O FEN embaixo
+  acompanha o editor e também aceita colar uma posição.
+
+As casas diferentes do programa ficam destacadas. Antes de aplicar, o editor diz o que vai
+acontecer:
+
+- **Explicado por lances.** A posição da mesa é a do programa com até 4 meios-lances desfeitos
+  e até 2 lances jogados depois. Exemplos: lance do adversário esquecido, lance digitado errado,
+  ou o nosso lance movido diferente do anunciado. O programa desfaz e registra esses lances
+  (o nosso vai ao log como MANUAL). A súmula, o histórico de repetição e o log da banca
+  continuam certos. A mesa não mostra de quem é a vez: basta mover a peça, e o editor diz de
+  quem fica a vez (confira com o relógio). O relógio interno não conta de novo os lances
+  refeitos. Mesmo assim, confira com F3.
+- **Posição nova.** Nada explica a diferença com poucos lances (peça derrubada e recolocada,
+  por exemplo). A posição é trocada, a súmula recomeça e o histórico de repetição também. O
+  contador dos 50 lances continua o do programa, mas volta a 0 se sumiu peça ou mudou peão.
+  Contar a mais poderia encerrar a partida antes da hora, porque o empate é automático
+  (FAQ Item 12).
+
+O teste 20 do `test_engine.py` cobre os casos e a remontagem da partida pelo log depois do ajuste.
 
 ---
 
@@ -253,7 +284,7 @@ lance que aparece na tela já está no disco, mesmo que a energia caia logo depo
 - **O log da banca** (`logs/partida_*.log`) é gravado antes do arquivo salvo, então nunca fica
   atrás dele. Se o arquivo salvo faltar, estiver corrompido ou atrasado, a partida é remontada
   linha por linha pelo log, com:
-  - lances nossos e do adversário, desfazer, posição por FEN e lances forçados;
+  - lances nossos e do adversário, desfazer, posição por FEN, ajuste do tabuleiro (F5) e lances forçados;
   - relógio sincronizado, custo do operador, fator de tempo, contempt e pondering;
   - o ritmo e o motor, da linha "Configuração da partida" que o log ganha no início;
   - os relógios refeitos com a mesma conta da gestão de tempo.
