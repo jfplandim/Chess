@@ -47,7 +47,12 @@ autoria da equipe.
 | Nossa gestão de tempo x a do próprio Stockfish (o mesmo Stockfish dos dois lados, 12 partidas, 40 s + 0,4 s, 0,16 s de operador descontado por lance dos dois lados) | **+0 =12 −0** |
 | Tempo médio por lance | **0,74 s** (nosso) x 1,14 s (Stockfish): 34% menos |
 | Menor relógio em todo o match | **19,1 s** (nosso) x 1,5 s (Stockfish) |
-| `python test_engine.py`, teste 12 (livro, limite rígido, táticas, lances legais, ponder, reabertura) | passa |
+| Ensaio no ritmo real, 15+10, pela sessão do torneio, contra o Stockfish puro com a gestão de tempo dele. Operador real de 5 s por lance (o motor configurado com 4 s) e F3 a cada 10 lances | empate por tripla repetição em 29 lances |
+| Relógio físico no fim desse ensaio | **10:23** (nosso) x 3:46 (Stockfish); a calibração subiu o operador para 5,0 s no 10º lance |
+| `python test_engine.py`, teste 12 (livro, limite rígido, táticas, lances legais, ponder, reabertura, queda e travamento no meio da busca) | passa |
+| Simulação de torneio da véspera (`tools/simular_torneio.py`, 136 partidas pela sessão das interfaces, 6.222 lances nossos) | **0 exceções** e 0 lances de emergência; 8/8 vitórias por mate contra motores mais fracos |
+| Crédito do ponder + empate morto, espelho contra o Stockfish com a gestão de tempo dele (6 partidas, 90 s + 1 s, ponder ligado) | **+0 =6 −0**; relógio no fim **+70,5 s** a nosso favor (antes: +24,4 s); 0,71 s por lance (antes: 1,48 s) |
+| Lance com crédito do ponder x busca normal, 24 posições, referência Stockfish 8 s | perda média de 1,2 cp (normal: 2,7 cp) com 0,43 s em vez de 2,31 s |
 
 Entre dois Stockfish quase tudo empata, e o confronto empatado se decide pela soma do tempo restante
 (FAQ Item 12). Doze partidas não medem pequenas diferenças de força, mas mostram que economizar
@@ -145,8 +150,11 @@ Sem a pasta `syzygy/` os dois motores funcionam normalmente (só não usam as ta
 ```bash
 python test_engine.py
 ```
-São 12 testes. O 12º confere o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas,
-lances legais, pondering e reabertura se o processo cair.
+São 14 testes:
+- **12º:** o Stockfish com a nossa gestão de tempo: livro, limite rígido, táticas, lances legais,
+  pondering e o que acontece se o processo cair ou travar no meio da busca.
+- **13º:** a leitura do lance digitado pelo operador.
+- **14º:** a recalibração do custo do operador pelo relógio físico.
 
 ### 5. Partida oficial (100% offline)
 ```bash
@@ -206,7 +214,7 @@ Feita para a mesa do torneio: o operador não digita comandos, só o lance do ad
 | F1 | Ajuda |
 | F2 | Desfaz o último meio-lance (e para o motor, se ele estiver pensando) |
 | F3 | Sincroniza com o relógio físico (MM:SS) |
-| F4 | Ajustes: operador, fator de tempo, contempt (só motor próprio), pondering, som e peças |
+| F4 | Ajustes: operador, fator de tempo, contempt (no Stockfish, regra do empate imediato), pondering, som e peças |
 | F5 | Corrige a posição por FEN (o tabuleiro físico é a referência) |
 | F6 | Modo economia: metade do tempo por lance (desempate por tempo, FAQ Item 12) |
 | F7 | Avaliação estática da posição |
@@ -225,7 +233,10 @@ formato nos dois modos.
 ## Checklist do dia do torneio
 
 1. O notebook mais rápido da equipe (`python tools/bench_stockfish.py`), **na tomada**, modo de
-   energia **desempenho**, outros programas fechados.
+   energia **desempenho**, outros programas fechados (navegadores pesados roubam processador e
+   memória), **Wi-Fi e dados móveis desligados** (FAQ Item 14) e ventilação livre: com carga
+   contínua o processador esquenta e reduz o clock (medido: 91 °C e −18% de nós por segundo).
+   Durante a partida a tela avisa se o notebook sair da tomada ou entrar em economia de energia.
 2. `python test_engine.py` → tem que terminar com "TODOS OS TESTES PASSARAM", e o teste 12
    tem que mostrar "Stockfish 19". Se aparecer o aviso de Stockfish não encontrado, rode
    `python tools/baixar_stockfish.py` enquanto ainda há internet.
@@ -234,15 +245,29 @@ formato nos dois modos.
    - motor **Stockfish** com desempenho **Ultra** (os padrões quando ele está instalado; confira
      "Stockfish 19 (Ultra)" no topo da partida). O motor próprio fica de reserva;
    - cor, controle de tempo (15+10 é o padrão do FAQ Item 7; no Armageddon o empate classifica
-     as Pretas — FAQ Item 12. O motor próprio ajusta o contempt sozinho; o Stockfish não tem
-     contempt e avalia o empate como 0);
+     as Pretas — FAQ Item 12. O motor próprio ajusta o contempt sozinho; com o Stockfish vale a
+     regra do empate imediato: com Pretas ele joga o lance que empata na hora, com Brancas foge
+     dele. O FAQ não diz se o Armageddon tem incremento: confirme com o árbitro e preencha o campo
+     do incremento, que aparece quando o Armageddon é escolhido);
    - Pondering **ligado** (FAQ Item 13);
    - **segundos que o operador gasta por lance** (anunciar + mover a peça + apertar o
      relógio + digitar o lance adversário). Meçam no treino! O padrão é 4 s.
      A gestão de tempo desconta esse custo de todos os lances futuros — no Armageddon
      sem incremento isso é o que evita perder por tempo.
+   - **O operador decide o desempate.** Digitem o lance do adversário assim que ele for
+     confirmado, antes de ele apertar o relógio (esse tempo é dele). Cada segundo a menos por
+     lance vale cerca de um minuto por partida na soma do tempo restante (FAQ Item 12). No
+     Armageddon sem incremento, com Pretas, 4 min e 4,5 s de operador dão só uns 50 lances: a tela
+     avisa quantos lances faltam para a bandeira de cada lado.
 4. A cada ~10 lances, sincronize com o relógio físico: F3 na interface, ou
    `tempo 11:42 12:05` no modo texto (nosso tempo e, opcional, o do adversário).
+   - **Na interface, a sincronização também mede o operador.** Se ele estiver mais lento do que
+     o configurado, o custo por lance sobe sozinho, e a tela avisa o valor novo.
+   - **Valor improvável pede confirmação** (Enter de novo), como `1230` no lugar de `12:30`. O
+     ponto vale como dois-pontos: `12.30` é 12:30.
+   - **Sem sincronizar,** o motor não tem como saber que o operador demora mais. A simulação de
+     150 lances de 15+10 mostra o risco: com o operador 2 s mais lento que o configurado, ele perde
+     por tempo perto do lance 60.
 5. O log exigido pelo FAQ Item 9 é gravado a cada lance em `logs/partida_*.log`
    e espelhado em `logs/ultima_partida_banca.txt`.
 6. Na interface, desfazer, posição, ajustes e os demais comandos ficam nas teclas F1 a F9
@@ -253,7 +278,9 @@ formato nos dois modos.
    - `fator 0.7` — pensar 30% menos. O desempate da Melhor de 3 é a soma do tempo restante
      nas três partidas (FAQ Item 12): em posição morta, `fator 0.5` guarda relógio e
      `fator 1` volta ao normal;
-   - `contempt 30` — evitar mais os empates contra adversário mais fraco (só motor próprio).
+   - `contempt 30` — evitar mais os empates contra adversário mais fraco. No Stockfish vale para
+     o lance que empata na hora (repetição, 50 lances, afogamento ou material insuficiente): ele só
+     é jogado se a melhor alternativa for pior que −30 cp.
 
 ---
 
@@ -284,16 +311,18 @@ formato nos dois modos.
 
 ## Guia para a Arguição da Banca
 
-O motor do torneio é o Stockfish com a **nossa gestão de tempo**: as perguntas A a D são as
+O motor do torneio é o Stockfish com a **nossa gestão de tempo**: as perguntas A a E são as
 principais. As seções 1 a 11 explicam o motor próprio (reserva), todo de autoria da equipe.
 
 ### A. "O que é de vocês, se o Stockfish faz a busca e a avaliação?"
 O FAQ permite usar o Stockfish, desde que declarado (Item 1), e exige ao menos um componente
 decisório próprio (Item 2). O nosso é a **gestão de tempo** (`time_manager.py`). O Stockfish roda
 em `go infinite`, ou seja, ele não decide quando parar: quanto pensar em cada lance e quando parar
-é decisão do nosso código, com as mesmas regras do motor próprio. Também são nossos o livro de
-aberturas consultado antes do Stockfish, as interfaces de torneio, o log da banca e o motor
-reserva inteiro (avaliação, busca e tempo).
+é decisão do nosso código, com as mesmas regras do motor próprio. Também é nossa uma parte da
+**seleção de lances**: a regra do empate imediato (seção F), que decide entre empatar agora ou não
+quando o Stockfish, que avalia todo empate como 0, não sabe o que o empate vale no torneio. São
+nossos ainda o livro de aberturas consultado antes do Stockfish, as interfaces de torneio, o log
+da banca e o motor reserva inteiro (avaliação, busca e tempo).
 
 ### B. "Como a gestão de tempo controla o Stockfish?"
 O `motor_stockfish.py` abre o Stockfish por UCI e lê as linhas de informação que ele envia:
@@ -308,6 +337,13 @@ O `motor_stockfish.py` abre o Stockfish por UCI e lê as linhas de informação 
    (`should_stop_iteration`). O limite rígido manda parar na hora (`should_abort_search`), e o
    Stockfish devolve o melhor lance que tem.
 5. Mate forçado confirmado: para sem gastar o resto do tempo.
+6. **Crédito do ponder:** se o adversário jogou o lance que o ponder previu, o tempo que o ponder
+   já pensou nessa posição conta como gasto. A tabela de transposição guarda essa busca, então o
+   Stockfish volta à mesma profundidade em milissegundos e o lance sai bem antes, sem perder força.
+   A parada acontece no meio da profundidade (com a tabela quente, a profundidade seguinte demora
+   segundos), com um piso de 15% do alvo para confirmar o lance.
+7. **Empate morto:** se as duas últimas buscas deram nota exatamente 0,00 com profundidade 18 ou
+   mais (o Stockfish vê empate forçado), o lance usa 30% do tempo normal.
 
 ### C. "Por que a gestão de tempo importa contra outro Stockfish?"
 Entre dois Stockfish a maioria das partidas empata. Com o confronto empatado, o FAQ (Item 12)
@@ -318,11 +354,43 @@ dos dois lados, foram 12 empates em 12 partidas, e a nossa gestão de tempo gast
 por lance: o nosso relógio nunca ficou abaixo de 19 s, e o da gestão de tempo do Stockfish chegou
 a 1,5 s.
 
-### D. "E a licença do Stockfish?"
+Na simulação de torneio da véspera (136 partidas pela mesma sessão da interface), o ponder
+acertou o lance do adversário em 67% a 77% das vezes contra o Stockfish, mas o lance seguinte
+ainda usava o tempo cheio; e 53% dos nossos lances foram em posição com nota 0,00. O crédito do
+ponder e o empate morto (itens 6 e 7 da seção B) atacam exatamente esses dois desperdícios.
+
+### D. "E se o Stockfish cair ou travar no meio da partida?"
+Ele roda como processo separado. Por isso uma falha dele não derruba a interface, e o relógio
+não fica parado:
+- **Caiu no meio da busca:** vale o melhor lance que ele já tinha mostrado. Se caiu antes de
+  mostrar algum, o processo é reaberto e a busca continua no tempo que sobra do lance.
+- **Travou:** a busca para no limite rígido. Se o `bestmove` não chegar em 1,5 s depois do
+  `stop`, o processo é derrubado e vale o melhor lance até ali.
+- **Não reabre:** por exemplo, o executável sumiu. A partida segue com o motor próprio, a tela
+  avisa e o log registra a troca.
+
+O teste 12 derruba e congela o processo de propósito no meio da busca.
+
+### E. "E a licença do Stockfish?"
 GPLv3. Usamos o programa oficial sem alterar o código: ele roda como processo separado e conversa
 por UCI. O executável não está no repositório; é baixado por `tools/baixar_stockfish.py` da
 versão oficial `sf_19`, com conferência do SHA-256. A rede neural embutida nele é peso de
 terceiros (Item 15) e está declarada.
+
+### F. "O que é a regra do empate imediato?"
+Repetição tripla e 50 lances encerram a partida na hora (FAQ Item 12), e o Stockfish avalia todo
+empate como 0. Mas no torneio o empate nem sempre vale 0:
+- **Armageddon, Pretas** (o empate classifica): se algum lance empata na hora (repetição, 50
+  lances, afogamento ou material insuficiente), o motor joga esse lance sem buscar.
+- **Armageddon, Brancas** (o empate elimina): a busca do Stockfish fica restrita (`searchmoves`)
+  aos lances que não empatam na hora e que não deixam o adversário empatar no lance seguinte, se
+  sobrar algum.
+- **Partida normal com contempt** (F4): o empate vale −contempt para nós. Se existe lance que empata
+  na hora, o Stockfish procura o melhor entre os outros, e o empate só é escolhido se essa
+  alternativa for pior que −contempt. Com contempt 0 (o padrão), nada muda.
+
+O teste 17 cobre os três casos. Na simulação de Armageddon a regra disparou poucas vezes, mas
+decidiu: numa delas as Pretas afogaram o rei adversário com 1 s no relógio.
 
 ### 1. "Como funciona a busca?"
 **Iterative Deepening + Negamax Alpha-Beta com PVS.** Buscamos profundidade 1, 2, 3...
@@ -406,6 +474,22 @@ bastam, os lances quietos (a parte cara) muitas vezes nem são gerados.
   raiz falha baixo (*fail-low*), o motor pensa mais; se o lance está estável há várias
   iterações, economiza.
 - Lance único (ex.: única fuga de xeque) é jogado na hora.
+- **Zona de sobrevivência:** com poucos lances de folga no relógio (abaixo de ~42 s em 15+10
+  com 4 s de operador), o alvo de cada lance cai para metade do incremento líquido (incremento
+  menos operador) mais 1/25 do relógio, e o limite rígido não passa do incremento líquido
+  inteiro. O resto do incremento reconstrói o relógio a cada lance. Numa partida simulada de
+  150 lances, o relógio para em ~40 s e não cai mais, mesmo se a busca for até o limite em todo
+  lance.
+- **O operador é medido pelo relógio físico:** a cada sincronização (F3), a diferença entre o
+  relógio interno e o físico, dividida pelos lances desde a última, mostra quanto o operador
+  demora a mais por lance. O custo configurado sobe para esse valor.
+  - Só sobe, porque pensar menos é o lado seguro. Um relógio parado pelo árbitro não faz o motor
+    pensar mais.
+  - Desfazer, FEN e retomada invalidam a medida até a próxima sincronização.
+- **Crédito do ponder:** ponder acertou o lance do adversário → o tempo dele nessa posição conta
+  como gasto; o lance para quando ponder + agora chega à metade do alvo (o alvo cresce se o lance
+  ficar instável), nunca antes de 15% do alvo.
+- **Empate morto:** duas buscas seguidas com nota 0,00 e profundidade alta → 30% do tempo.
 
 ### 7. Empates, repetição e "contempt"
 Detectamos repetição com uma pilha própria de chaves (só até o último lance irreversível)
@@ -415,7 +499,8 @@ repetir em posições iguais/levemente melhores, porque jogamos para ganhar.
 No **Armageddon** (FAQ Item 12) o empate classifica as Pretas, então o `main.py` ajusta o
 contempt sozinho: **+100 cp** com Brancas (empate é derrota) e **−100 cp** com Pretas (o motor
 passa a buscar repetição e finais empatados). O contempt é sempre contado a partir da nossa
-cor, inclusive no ponder e nos empates de tablebase.
+cor, inclusive no ponder e nos empates de tablebase. Com o Stockfish, que não tem contempt, vale
+a regra do empate imediato (seção F).
 
 ### 8. Livro e Tablebases
 - Livro embutido de linhas de GMs (e suporte a `.bin` Polyglot em `books/`) com trava
@@ -427,7 +512,8 @@ cor, inclusive no ponder e nos empates de tablebase.
 ### 9. Pondering (FAQ Item 13)
 Durante o turno adversário o motor pensa na posição após o lance que ele **prevê** (2º lance
 da PV). Ao digitar o lance real, o ponder para em milissegundos; se o lance foi o previsto,
-a Tabela de Transposição já tem a árvore pronta. A busca de ponder e a principal nunca rodam
+a Tabela de Transposição já tem a árvore pronta, e o tempo pensado no ponder vira crédito na
+gestão de tempo (o lance sai mais rápido). A busca de ponder e a principal nunca rodam
 ao mesmo tempo (o motor tem um *lock* e o `stop_ponder` espera a thread terminar).
 
 ### 10. "Os números da avaliação são de vocês?"
@@ -465,4 +551,21 @@ python tools/match.py --a "python uci.py" --a-name NOSSO_TEMPO --a-opt Motor=Sto
                       --b ../stockfish/stockfish/stockfish-linux-x86-64-universal --b-name SF_PURO \
                       --b-opt Threads=4 --b-opt "Move Overhead=160" \
                       --games 12 --tc 40+0.4 --overhead 0.16 --concurrency 1
+```
+
+`tools/simular_torneio.py` joga pelo **mesmo caminho das interfaces** (`session.GameSession`: livro,
+Stockfish com a nossa gestão de tempo, crédito do ponder, empate morto, regra do empate, log e fim de
+partida), com o relógio físico e o operador simulados (o operador real pode ser mais lento que o
+configurado) e o F3 a cada 10 lances. Os logs vão para uma pasta temporária, nunca para `logs/`.
+
+```bash
+# Espelho contra o Stockfish com a gestão de tempo dele, em 90 s + 1 s (1/10 do 15+10), com ponder
+python tools/simular_torneio.py --jogos 6 --base 90 --inc 1 --ponder
+
+# Contra um adversário mais fraco, da posição inicial (com o nosso livro)
+python tools/simular_torneio.py --jogos 4 --adversario sf --elo 1800 --posicao-inicial
+
+# Armageddon no ritmo real (5 e 4 minutos, operador configurado 4 s e real 4,5 s)
+python tools/simular_torneio.py --jogos 8 --armageddon --operador 4 --operador-real 4.5 \
+    --operador-real-adversario 4.5 --overhead-adversario 4000 --margem 0.5
 ```

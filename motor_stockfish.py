@@ -22,10 +22,12 @@ O motor próprio (search.py) continua disponível como reserva: os dois têm a m
 from __future__ import annotations
 
 import atexit
+import concurrent.futures
 import glob
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -42,6 +44,21 @@ from time_manager import TimeManager
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_SYZYGY = os.path.join(BASE_DIR, "syzygy")
 ESPERA_ENTRE_CONSULTAS = 0.01  # segundos entre uma olhada e outra nas informações do Stockfish
+# Depois do "stop", um Stockfish saudável responde "bestmove" em milissegundos. Sem resposta neste
+# prazo ele travou: o processo é derrubado e vale o melhor lance que ele já tinha mostrado.
+ESPERA_BESTMOVE = 1.5
+# Prazo do "isready" (ping) e do "quit": um Stockfish parado responde em milissegundos.
+TEMPO_RESPOSTA = 3.0
+TEMPO_ABRIR = 30.0  # abrir o processo e reservar a tabela (até 4 GB) pela primeira vez
+# Falhas do processo do Stockfish (caiu, travou, foi fechado): viram o melhor lance até ali, ou uma
+# nova tentativa com o processo reaberto. Erros de programação continuam aparecendo.
+ERROS_DO_PROCESSO = (
+    chess.engine.EngineError,
+    chess.engine.EngineTerminatedError,
+    OSError,
+    TimeoutError,
+    concurrent.futures.CancelledError,
+)
 # Tabela de transposição pela memória do computador: (RAM mínima em MB, tabela em MB)
 HASH_POR_RAM = ((30_000, 4096), (14_000, 2048), (7_000, 1024), (0, 512))
 
@@ -54,6 +71,14 @@ logging.getLogger("chess.engine").addHandler(logging.NullHandler())
 
 class MotorIndisponivel(RuntimeError):
     """O Stockfish não foi encontrado ou não abriu."""
+
+
+def _ignorar_erro_de_fundo(loop, contexto) -> None:
+    """
+    Quando o processo do Stockfish morre, o python-chess deixa avisos assíncronos ("Future exception
+    was never retrieved") que iriam direto para o terminal e bagunçariam a TUI. A falha em si já é
+    tratada pela busca (melhor lance até ali, ou processo reaberto). Vale só para o laço do Stockfish.
+    """
 
 
 def _registrar_fechamento(funcao) -> None:
@@ -180,6 +205,22 @@ def arquitetura_stockfish(caminho: str) -> str | None:
     return None
 
 
+def _perfil_do_sistema() -> str | None:
+    """Perfil ativo do tuned ou do power-profiles-daemon (Linux), ou None. Leva até ~0,5 s."""
+    for comando in (["powerprofilesctl", "get"], ["tuned-adm", "active"]):
+        if not shutil.which(comando[0]):
+            continue
+        try:
+            saida = subprocess.run(comando, capture_output=True, text=True, timeout=3).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if not saida:
+            continue
+        linha = saida.splitlines()[0]
+        return (linha.split(":", 1)[1] if ":" in linha else linha).strip().lower()
+    return None
+
+
 def avisos_de_energia() -> list[str]:
     """Na bateria ou em economia de energia o processador fica bem mais lento, e o motor mais fraco."""
     avisos: list[str] = []
@@ -203,6 +244,13 @@ def avisos_de_energia() -> list[str]:
                 continue
         if perfil in ("low-power", "quiet", "power", "balance_power"):
             avisos.append(f"O modo de energia está em economia ({perfil}): mude para desempenho antes de jogar.")
+        else:
+            # Fedora e outros com tuned / power-profiles-daemon: o perfil "powersave" deixa o processador
+            # lento mesmo na tomada, sem mudar o arquivo acima (medido: motor ~3x mais lento)
+            perfil = _perfil_do_sistema()
+            if perfil and any(p in perfil for p in ("powersave", "power-saver", "battery")):
+                avisos.append(f"O perfil de energia do sistema está em economia ({perfil}): mude para desempenho "
+                              "antes de jogar (no Fedora: tuned-adm profile throughput-performance).")
     elif sys.platform == "win32":
         import ctypes
 
@@ -293,6 +341,49 @@ def verificar_stockfish(perguntar: bool | None = None) -> str | None:
     return None
 
 
+# ----------------------------------------------------------------------
+# Regra do empate imediato (seleção de lances da equipe, FAQ 2). O Stockfish avalia todo empate como 0 e
+# não tem contempt; no torneio a tripla repetição e os 50 lances encerram a partida na hora (FAQ 12).
+# ----------------------------------------------------------------------
+def empate_imediato(board: chess.Board) -> bool:
+    """A posição (depois de um lance) já encerra a partida empatada?"""
+    if board.is_checkmate():
+        return False
+    return (board.is_stalemate() or board.is_insufficient_material() or board.halfmove_clock >= 100
+            or board.is_repetition(3))
+
+
+def lances_que_empatam(board: chess.Board, legais: list[chess.Move]) -> list[chess.Move]:
+    """Lances que empatam a partida na hora: repetição tripla, 50 lances, afogamento ou material insuficiente."""
+    empatam = []
+    for lance in legais:
+        board.push(lance)
+        try:
+            if empate_imediato(board):
+                empatam.append(lance)
+        finally:
+            board.pop()
+    return empatam
+
+
+def permite_empate(board: chess.Board, lance: chess.Move) -> bool:
+    """Depois deste lance, o adversário tem um lance que empata na hora? (cerca de 25 ms num meio-jogo)"""
+    board.push(lance)
+    try:
+        if board.is_game_over():
+            return False
+        for resposta in board.legal_moves:
+            board.push(resposta)
+            try:
+                if empate_imediato(board):
+                    return True
+            finally:
+                board.pop()
+        return False
+    finally:
+        board.pop()
+
+
 def nota_da_info(score: chess.engine.PovScore, cor: chess.Color) -> int:
     """Nota do ponto de vista de quem joga, na mesma escala do motor próprio (mate = MATE_SCORE - meios-lances)."""
     relativa = score.pov(cor)
@@ -319,8 +410,11 @@ class MotorStockfish:
         self.threads = threads or threads_ultra
         self.hash_mb = hash_mb or tabela_ultra
         self.arquitetura = arquitetura_stockfish(self.caminho)
-        # Compatibilidade com o motor próprio. O Stockfish não tem contempt (avalia o empate como 0).
+        # O Stockfish não tem contempt (avalia o empate como 0). Aqui o contempt vale só para a regra do
+        # empate imediato: empate vale -contempt para nós (positivo evita, negativo procura o empate).
         self.contempt = 0
+        # Armageddon (FAQ 12): "buscar" (Pretas, empate classifica) ou "evitar" (Brancas); None nas outras partidas
+        self.regra_empate: str | None = None
         self.our_color: bool | None = None
         self.book_tb = BookAndTablebaseManager()
         self.nome = "Stockfish"
@@ -334,40 +428,60 @@ class MotorStockfish:
     # Processo do Stockfish
     # ------------------------------------------------------------------
     def _abrir(self) -> None:
+        sf = None
         try:
-            sf = chess.engine.SimpleEngine.popen_uci(self.caminho, timeout=30)
-        except (OSError, chess.engine.EngineError, chess.engine.EngineTerminatedError, TimeoutError) as erro:
+            sf = chess.engine.SimpleEngine.popen_uci(self.caminho, timeout=TEMPO_ABRIR)
+            loop = sf.protocol.loop
+            loop.call_soon_threadsafe(loop.set_exception_handler, _ignorar_erro_de_fundo)
+            opcoes: dict[str, int | str] = {"Threads": self.threads, "Hash": self.hash_mb}
+            if self.book_tb.max_pieces():
+                # FAQ item 4: só tablebases de até 5 peças
+                opcoes["SyzygyPath"] = PASTA_SYZYGY
+                opcoes["SyzygyProbeLimit"] = MAX_SYZYGY_PIECES
+            sf.configure(opcoes)
+            sf.ping()  # espera a tabela de transposição ser reservada
+        except ERROS_DO_PROCESSO as erro:
+            if sf is not None:
+                self._derrubar(sf)
             raise MotorIndisponivel(f"O Stockfish não abriu ({self.caminho}): {erro}") from erro
-        opcoes: dict[str, int | str] = {"Threads": self.threads, "Hash": self.hash_mb}
-        if self.book_tb.max_pieces():
-            # FAQ item 4: só tablebases de até 5 peças
-            opcoes["SyzygyPath"] = PASTA_SYZYGY
-            opcoes["SyzygyProbeLimit"] = MAX_SYZYGY_PIECES
-        sf.configure(opcoes)
+        sf.timeout = TEMPO_RESPOSTA  # daqui em diante, sem resposta em 3 s = processo travado
         self._sf = sf
         self.nome = sf.id.get("name", "Stockfish")
 
     def _garantir(self) -> chess.engine.SimpleEngine:
-        """Devolve o Stockfish pronto; se o processo tiver caído, abre de novo."""
+        """Devolve o Stockfish pronto; se o processo tiver caído ou travado, abre outro."""
         if self._sf is not None:
             try:
                 self._sf.ping()
                 return self._sf
-            except (chess.engine.EngineError, chess.engine.EngineTerminatedError, OSError, TimeoutError):
-                self._fechar_processo()
+            except ERROS_DO_PROCESSO:
+                self._fechar_processo(derrubar=True)
         self._abrir()
         return self._sf
 
-    def _fechar_processo(self) -> None:
+    @staticmethod
+    def _derrubar(sf: chess.engine.SimpleEngine) -> None:
+        """Mata o processo na hora (também um Stockfish travado) e solta a thread do python-chess."""
+        try:
+            os.kill(sf.protocol.transport.get_pid(), getattr(signal, "SIGKILL", signal.SIGTERM))
+        except Exception:  # noqa: BLE001 - processo já encerrado
+            pass
+        try:
+            sf.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _fechar_processo(self, derrubar: bool = False) -> None:
         sf, self._sf = self._sf, None
-        if sf is not None:
-            try:
-                sf.quit()
-            except Exception:  # noqa: BLE001 - processo já caído
-                try:
-                    sf.close()
-                except Exception:  # noqa: BLE001
-                    pass
+        if sf is None:
+            return
+        if derrubar:
+            self._derrubar(sf)
+            return
+        try:
+            sf.quit()
+        except Exception:  # noqa: BLE001 - processo já caído ou travado
+            self._derrubar(sf)
 
     def fechar(self) -> None:
         """Encerra o processo. Se uma busca não liberar a trava em 2 s, fecha assim mesmo (saída do programa)."""
@@ -390,8 +504,8 @@ class MotorStockfish:
             self._jogo = object()
             try:
                 self._garantir().analyse(chess.Board(), chess.engine.Limit(depth=1), game=self._jogo)
-            except (chess.engine.EngineError, chess.engine.EngineTerminatedError, OSError, TimeoutError):
-                pass  # se falhar aqui, a próxima busca reabre o processo
+            except ERROS_DO_PROCESSO:
+                self._fechar_processo(derrubar=True)  # a próxima busca reabre o processo
 
     def resize_tt(self, mb: int) -> None:
         self.ajustar_recursos(self.threads, mb)
@@ -413,8 +527,11 @@ class MotorStockfish:
                 return  # abre com os valores novos na próxima busca
             try:
                 self._sf.configure({"Threads": threads, "Hash": hash_mb})
-            except (chess.engine.EngineError, chess.engine.EngineTerminatedError, OSError, TimeoutError):
-                self._fechar_processo()  # reabre com os valores novos na próxima busca
+                self._sf.timeout = TEMPO_ABRIR
+                self._sf.ping()  # espera a tabela nova ser reservada
+                self._sf.timeout = TEMPO_RESPOSTA
+            except ERROS_DO_PROCESSO:
+                self._fechar_processo(derrubar=True)  # reabre com os valores novos na próxima busca
 
     def search_best_move(
         self,
@@ -466,10 +583,33 @@ class MotorStockfish:
 
         if len(legais) == 1 and not infinite:
             unico = legais[0]
-            board.push(unico)
-            nota = -evaluate_board(board, check_terminal=True)
-            board.pop()
-            return SearchResult(unico, nota, 1, 1, tm.elapsed(), [unico.uci()], "SEARCH", 0, [unico])
+            return SearchResult(unico, self._nota_estatica(board, unico), 1, 1, tm.elapsed(), [unico.uci()],
+                                "SEARCH", 0, [unico])
+
+        # Regra do empate imediato (fora do ponder): Armageddon ou contempt diferente de zero
+        empatam: list[chess.Move] = []
+        raiz: list[chess.Move] | None = None
+        if not infinite and (self.regra_empate or self.contempt):
+            empatam = lances_que_empatam(board, legais)
+        if empatam:
+            sobra = [m for m in legais if m not in empatam]
+            if self.regra_empate == "buscar":
+                # Pretas no Armageddon: o empate classifica, então empatar agora é vencer o confronto
+                lance = empatam[0]
+                return SearchResult(lance, 0, 1, 1, tm.elapsed(), [lance.uci()], "REGRA_EMPATE", 0, [lance])
+            if sobra:
+                raiz = sobra
+        if self.regra_empate == "evitar" and not infinite:
+            # Brancas no Armageddon: o empate elimina. Também ficam de fora os lances que deixam o adversário
+            # empatar no lance seguinte, se sobrar algum lance.
+            candidatos = raiz or legais
+            seguros = [m for m in candidatos if not permite_empate(board, m)]
+            if seguros and len(seguros) < len(candidatos):
+                raiz = seguros
+            if raiz is not None and len(raiz) == 1:
+                lance = raiz[0]
+                return SearchResult(lance, self._nota_estatica(board, lance), 1, 1, tm.elapsed(), [lance.uci()],
+                                    "REGRA_EMPATE", 0, [lance])
 
         # Limites que o próprio Stockfish respeita (usados só em testes e no UCI): profundidade e nós.
         # Sem eles, "go infinite": quem para é a nossa gestão de tempo.
@@ -479,53 +619,49 @@ class MotorStockfish:
         elif max_depth < 64:
             limite = chess.engine.Limit(depth=max_depth)
 
-        cor = board.turn
-        melhor: chess.Move | None = None
-        nota = 0
-        pv: list[chess.Move] = []
-        profundidade = seldepth = nos = 0
-        nota_anterior: int | None = None
-        parar = False
+        progresso = _Progresso(board.turn)
+        for tentativa in (1, 2):
+            try:
+                resultado = self._analisar(board, tm, raiz or legais, limite, stop_event, verbose, infinite,
+                                           info_callback, progresso, raiz)
+                if empatam and raiz and not self.regra_empate and resultado.score_cp < -self.contempt:
+                    # Contempt: o empate vale -contempt para nós. O melhor lance que não empata é pior que isso.
+                    lance = empatam[0]
+                    return SearchResult(lance, 0, resultado.depth, resultado.nodes, resultado.elapsed_sec,
+                                        [lance.uci()], "REGRA_EMPATE", resultado.seldepth, [lance])
+                return resultado
+            except ERROS_DO_PROCESSO as erro:
+                # O processo caiu ou travou no meio da busca
+                self._fechar_processo(derrubar=True)
+                if progresso.melhor is not None:
+                    return progresso.resultado(tm)  # o melhor lance que o Stockfish já tinha mostrado
+                parou = (stop_event is not None and stop_event.is_set()) or (not infinite and tm.should_abort_search())
+                if tentativa == 2 or parou:
+                    raise MotorIndisponivel(f"O Stockfish caiu durante a busca: {erro}") from erro
+                # Caiu antes de mostrar um lance: reabre e busca de novo, no tempo que sobra deste lance
+        raise AssertionError("inalcançável")
 
+    @staticmethod
+    def _nota_estatica(board: chess.Board, lance: chess.Move) -> int:
+        board.push(lance)
+        try:
+            return -evaluate_board(board, check_terminal=True)
+        finally:
+            board.pop()
+
+    def _analisar(self, board, tm: TimeManager, legais, limite, stop_event, verbose, infinite,
+                  info_callback, p: "_Progresso", raiz: list[chess.Move] | None = None) -> SearchResult:
+        """Busca do Stockfish parada pela nossa gestão de tempo. raiz: só estes lances ("searchmoves")."""
         sf = self._garantir()
-        with sf.analysis(board, limite, game=self._jogo, info=chess.engine.INFO_ALL) as analise:
-            terminou = False
+        parar = terminou = False
+        with sf.analysis(board, limite, game=self._jogo, info=chess.engine.INFO_ALL, root_moves=raiz) as analise:
             while True:
                 while not analise.would_block():
                     info = analise.next()
                     if info is None:  # o Stockfish parou sozinho (limite de profundidade ou de nós)
                         terminou = True
                         break
-                    nos = info.get("nodes", nos)
-                    seldepth = info.get("seldepth", seldepth)
-                    falhou_baixo = bool(info.get("upperbound"))
-                    if falhou_baixo and not infinite:
-                        tm.notify_fail_low()  # a nota da raiz caiu: a gestão de tempo pensa mais
-                    if falhou_baixo or info.get("lowerbound") or not info.get("pv") or "score" not in info:
-                        continue
-                    d = info.get("depth", 0)
-                    if d <= profundidade:
-                        continue
-                    # Profundidade concluída: é aqui que a nossa gestão de tempo decide
-                    novo_pv = list(info["pv"])
-                    nova_nota = nota_da_info(info["score"], cor)
-                    mudou = melhor is not None and novo_pv[0] != melhor
-                    queda = (nota_anterior - nova_nota) if nota_anterior is not None else 0
-                    melhor, nota, pv, profundidade = novo_pv[0], nova_nota, novo_pv, d
-                    nota_anterior = nova_nota
-                    decorrido = tm.elapsed()
-                    if info_callback is not None:
-                        info_callback(d, seldepth, nota, nos, decorrido, list(pv))
-                    if verbose:
-                        nps = int(nos / max(0.001, decorrido))
-                        print(f"  info depth {d:>2}/{seldepth:<2} | score {nota:>+6d} cp | nodes {nos:>10d} "
-                              f"({nps:>8d} n/s) | time {decorrido:>6.2f}s | pv {' '.join(m.uci() for m in pv[:8])}")
-                    if infinite:
-                        continue
-                    if abs(nota) >= MATE_THRESHOLD and d >= (MATE_SCORE - abs(nota)) + 2:
-                        parar = True  # mate forçado confirmado: não precisa pensar mais
-                    tm.adjust_for_instability(mudou, queda, d)
-                    if tm.should_stop_iteration():
+                    if self._ler_info(info, p, tm, verbose, infinite, info_callback):
                         parar = True
                 if terminou or parar:
                     break
@@ -537,23 +673,84 @@ class MotorStockfish:
                     stop_event.wait(ESPERA_ENTRE_CONSULTAS)
                 else:
                     time.sleep(ESPERA_ENTRE_CONSULTAS)
-            analise.stop()
+            if not terminou:
+                analise.stop()
+                self._esperar_bestmove(sf, analise)
             resposta = analise.wait()
             final = analise.info
 
-        lance = resposta.move if resposta is not None and resposta.move in legais else (melhor or legais[0])
-        nos = final.get("nodes", nos)
-        seldepth = final.get("seldepth", seldepth)
+        lance = resposta.move if resposta is not None and resposta.move in legais else (p.melhor or legais[0])
+        p.nos = final.get("nodes", p.nos)
+        p.seldepth = final.get("seldepth", p.seldepth)
         pv_final = list(final.get("pv") or [])
         if pv_final and pv_final[0] == lance:
-            pv = pv_final
+            p.pv = pv_final
             if "score" in final:
-                nota = nota_da_info(final["score"], cor)
-            profundidade = max(profundidade, final.get("depth", 0))
-        elif not pv or pv[0] != lance:
-            pv = [lance]
-        return SearchResult(lance, nota, max(1, profundidade), max(1, nos), tm.elapsed(),
-                            [m.uci() for m in pv], "SEARCH", seldepth, list(pv))
+                p.nota = nota_da_info(final["score"], p.cor)
+            p.profundidade = max(p.profundidade, final.get("depth", 0))
+        return p.resultado(tm, lance)
+
+    def _ler_info(self, info, p: "_Progresso", tm: TimeManager, verbose, infinite, info_callback) -> bool:
+        """Uma linha "info" do Stockfish. Devolve True quando a nossa gestão de tempo decide parar."""
+        p.nos = info.get("nodes", p.nos)
+        p.seldepth = info.get("seldepth", p.seldepth)
+        falhou_baixo = bool(info.get("upperbound"))
+        if falhou_baixo and not infinite:
+            tm.notify_fail_low()  # a nota da raiz caiu: a gestão de tempo pensa mais
+        if falhou_baixo or info.get("lowerbound") or not info.get("pv") or "score" not in info:
+            return False
+        d = info.get("depth", 0)
+        if d <= p.profundidade:
+            return False
+        # Profundidade concluída: é aqui que a nossa gestão de tempo decide
+        novo_pv = list(info["pv"])
+        nova_nota = nota_da_info(info["score"], p.cor)
+        mudou = p.melhor is not None and novo_pv[0] != p.melhor
+        queda = (p.nota_anterior - nova_nota) if p.nota_anterior is not None else 0
+        p.melhor, p.nota, p.pv, p.profundidade = novo_pv[0], nova_nota, novo_pv, d
+        p.nota_anterior = nova_nota
+        decorrido = tm.elapsed()
+        if info_callback is not None:
+            info_callback(d, p.seldepth, p.nota, p.nos, decorrido, list(p.pv))
+        if verbose:
+            nps = int(p.nos / max(0.001, decorrido))
+            print(f"  info depth {d:>2}/{p.seldepth:<2} | score {p.nota:>+6d} cp | nodes {p.nos:>10d} "
+                  f"({nps:>8d} n/s) | time {decorrido:>6.2f}s | pv {' '.join(m.uci() for m in p.pv[:8])}")
+        if infinite:
+            return False
+        mate_confirmado = abs(p.nota) >= MATE_THRESHOLD and d >= (MATE_SCORE - abs(p.nota)) + 2
+        tm.adjust_for_instability(mudou, queda, d)
+        return mate_confirmado or tm.should_stop_iteration()
+
+    def _esperar_bestmove(self, sf: chess.engine.SimpleEngine, analise) -> None:
+        """Depois do "stop": espera o "bestmove". Se não vier em ESPERA_BESTMOVE, o Stockfish travou."""
+        prazo = time.perf_counter() + ESPERA_BESTMOVE
+        while True:
+            if analise.would_block():
+                if time.perf_counter() > prazo:
+                    self._derrubar(sf)
+                    raise chess.engine.EngineTerminatedError("o Stockfish não respondeu ao stop (travado)")
+                time.sleep(0.002)
+            elif analise.next() is None:
+                return  # o "bestmove" chegou
+
+
+class _Progresso:
+    """O que o Stockfish já mostrou nesta busca. Sobrevive a uma queda do processo."""
+
+    def __init__(self, cor: chess.Color):
+        self.cor = cor
+        self.melhor: chess.Move | None = None
+        self.nota = 0
+        self.pv: list[chess.Move] = []
+        self.profundidade = self.seldepth = self.nos = 0
+        self.nota_anterior: int | None = None
+
+    def resultado(self, tm: TimeManager, lance: chess.Move | None = None) -> SearchResult:
+        lance = lance or self.melhor
+        pv = self.pv if self.pv and self.pv[0] == lance else [lance]
+        return SearchResult(lance, self.nota, max(1, self.profundidade), max(1, self.nos), tm.elapsed(),
+                            [m.uci() for m in pv], "SEARCH", self.seldepth, list(pv))
 
 
 # ----------------------------------------------------------------------
@@ -582,6 +779,7 @@ def criar_motor(nome: str, desempenho: str = "ultra"):
         motor.definir_desempenho(desempenho)
         motor.clear_cache()
         motor.contempt = 0
+        motor.regra_empate = None  # o processo é o mesmo entre partidas: a regra do Armageddon não pode sobrar
         motor.our_color = None
         return motor
     if nome == "proprio":

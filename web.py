@@ -35,7 +35,6 @@ import chess.svg
 
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
-from main import parse_clock_input
 from motor_stockfish import (
     NIVEIS_DESEMPENHO,
     MotorIndisponivel,
@@ -44,7 +43,7 @@ from motor_stockfish import (
     recursos_do_nivel,
     verificar_stockfish,
 )
-from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva
+from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva, ler_relogio
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_WEB = os.path.join(BASE_DIR, "web")
@@ -58,7 +57,7 @@ ARQUIVOS = {
 }
 IMAGEM_DOCS = re.compile(r"/img/([a-z0-9-]+\.png)")  # imagens da documentação (só .png de docs/img)
 PECAS_PROMOCAO = {"q": chess.QUEEN, "r": chess.ROOK, "b": chess.BISHOP, "n": chess.KNIGHT}
-MARCAS = {"BOOK": "livro", "SYZYGY_TB": "tb", "MANUAL": "manual", "EMERGENCY": "emerg."}
+MARCAS = {"BOOK": "livro", "SYZYGY_TB": "tb", "MANUAL": "manual", "EMERGENCY": "emerg.", "REGRA_EMPATE": "empate"}
 RITMOS = ("oficial", "armageddon", "edital", "personalizado")
 
 # Peças desenhadas pelo próprio python-chess (as mesmas do tabuleiro SVG do main.py)
@@ -245,6 +244,9 @@ class Controlador:
             return
         self.ultimo_nosso = lance
         self.ultimo_resultado = resultado
+        aviso = s.tomar_aviso()
+        if aviso:
+            self._avisar(aviso, "erro", "Motor reserva")
         self.contador_som += 1
         self.fase = "fim" if s.encerrada else "adversario"
         self._mudou()
@@ -291,12 +293,15 @@ class Controlador:
             operador = ler_num(dados.get("operador", "4") or "4")
             minutos = ler_num(dados.get("minutos", "15") or "15")
             incremento = ler_num(dados.get("incremento", "0") or "0")
+            inc_armageddon = ler_num(dados.get("inc_armageddon", "0") or "0")
         except ValueError:
             raise ErroOperador("Confira os números: use algarismos, como 4 ou 2,5.") from None
         if not 0 <= operador <= 30:
             raise ErroOperador("O tempo do operador deve ficar entre 0 e 30 segundos.")
         if ritmo == "personalizado" and not (0.5 <= minutos <= 180 and 0 <= incremento <= 60):
             raise ErroOperador("Ritmo personalizado: de 0,5 a 180 minutos e até 60 segundos de incremento.")
+        if ritmo == "armageddon" and not 0 <= inc_armageddon <= 60:
+            raise ErroOperador("Incremento do Armageddon: de 0 a 60 segundos.")
         motor = dados.get("motor") or motor_padrao()
         if motor not in ("stockfish", "proprio"):
             raise ErroOperador("Motor desconhecido.")
@@ -307,6 +312,7 @@ class Controlador:
             our_color=chess.BLACK if dados.get("cor") == "b" else chess.WHITE,
             ritmo=ritmo, minutos=minutos, incremento=incremento,
             ponder=bool(dados.get("ponder", True)), operador=operador, motor=motor, desempenho=desempenho,
+            inc_armageddon=inc_armageddon if ritmo == "armageddon" else 0.0,
         )
 
     def retomar(self, dados: dict) -> dict:
@@ -325,6 +331,9 @@ class Controlador:
             self._entrar_turno(auto=False)
             self.pedir_relogio = self.versao
             self._avisar("Partida retomada. Confira os relógios físicos.", "info", "Retomar")
+            aviso = sessao.tomar_aviso()
+            if aviso:
+                self._avisar(aviso, "erro", "Motor reserva")
         return {"ok": True}
 
     def ler(self, dados: dict) -> dict:
@@ -411,14 +420,21 @@ class Controlador:
 
     def relogio(self, dados: dict) -> dict:
         try:
-            nosso = parse_clock_input(str(dados.get("nosso", "")))
+            nosso = ler_relogio(str(dados.get("nosso", "")))
             texto_adv = str(dados.get("adv", "")).strip()
-            adv = parse_clock_input(texto_adv) if texto_adv else None
-        except (ValueError, IndexError):
-            raise ErroOperador("Não entendi o tempo. Use MM:SS, como 12:30, ou segundos, como 750.") from None
+            adv = ler_relogio(texto_adv) if texto_adv else None
+        except ValueError as erro:
+            raise ErroOperador(str(erro)) from None
         with self.trava:
-            self._exigir_partida().sincronizar(nosso, adv)
-            self._avisar("Relógios sincronizados.", "ok")
+            s = self._exigir_partida()
+            suspeita = s.suspeita_relogio(nosso, adv)
+            if suspeita and not dados.get("confirmar"):
+                return {"confirmar": f"{suspeita} Sincronizar de novo confirma."}
+            recalibrado = s.sincronizar(nosso, adv)
+            if recalibrado:
+                self._avisar(recalibrado, "info", "Relógios sincronizados")
+            else:
+                self._avisar("Relógios sincronizados.", "ok")
         return {"ok": True}
 
     def ajustes(self, dados: dict) -> dict:
@@ -629,7 +645,12 @@ class Controlador:
         r = self.ultimo_resultado
         if r is None:
             return None
-        return self._linhas_motor(r.depth, r.seldepth, r.score_cp, r.nodes, r.elapsed_sec, r.pv, r.source)
+        linhas = self._linhas_motor(r.depth, r.seldepth, r.score_cp, r.nodes, r.elapsed_sec, r.pv, r.source)
+        # Gestão de tempo da equipe: por que este lance saiu mais rápido
+        s = self.sessao
+        linhas["credito"] = fmt_tempo(s.ultimo_credito) if s.ultimo_credito > 0 else None
+        linhas["empate_morto"] = s.time_manager.economia_empate_morto
+        return linhas
 
     @staticmethod
     def _linhas_motor(prof, seletiva, nota, nos, tempo, pv, origem) -> dict:

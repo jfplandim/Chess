@@ -31,7 +31,6 @@ from textual.widgets import Button, Digits, Footer, Input, Label, Markdown, Radi
 
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
-from main import parse_clock_input
 from motor_stockfish import (
     NOME_DESEMPENHO,
     MotorIndisponivel,
@@ -48,6 +47,7 @@ from session import (
     Leitura,
     arquivar_partida_salva,
     ler_lance,
+    ler_relogio,
     ler_partida_salva,
 )
 
@@ -443,6 +443,7 @@ class DialogoRelogio(Dialogo):
         super().__init__()
         self.sessao = sessao
         self.aviso = aviso
+        self.confirmado: tuple | None = None  # valor suspeito digitado de novo = confirmado
 
     def compose(self) -> ComposeResult:
         nosso, adv = self.sessao.relogios()
@@ -472,11 +473,16 @@ class DialogoRelogio(Dialogo):
     @on(Button.Pressed, "#ok")
     def _aplicar(self, event) -> None:
         try:
-            nosso = parse_clock_input(self.query_one("#nosso", Input).value)
+            nosso = ler_relogio(self.query_one("#nosso", Input).value)
             texto_adv = self.query_one("#adv", Input).value.strip()
-            adv = parse_clock_input(texto_adv) if texto_adv else None
-        except (ValueError, IndexError):
-            self.query_one("#erro", Static).update("Não entendi o tempo. Use MM:SS, como 12:30.")
+            adv = ler_relogio(texto_adv) if texto_adv else None
+        except ValueError as erro:
+            self.query_one("#erro", Static).update(str(erro))
+            return
+        suspeita = self.sessao.suspeita_relogio(nosso, adv)
+        if suspeita and self.confirmado != (nosso, adv):
+            self.confirmado = (nosso, adv)
+            self.query_one("#erro", Static).update(f"{suspeita} Enter de novo confirma.")
             return
         self.dismiss((nosso, adv))
 
@@ -503,10 +509,11 @@ class DialogoAjustes(Dialogo):
                 yield Input(fmt_num(tm.time_factor), id="fator", max_length=5)
             yield Static("1 é o normal. 0,5 pensa metade do tempo; 1,3 pensa mais.", classes="nota")
             with Horizontal(classes="campo"):
-                yield Label("Contempt (cp, só motor próprio)", classes="rotulo")
+                yield Label("Contempt (cp)", classes="rotulo")
                 yield Input(str(motor.contempt), id="contempt", max_length=4)
             yield Static("Positivo evita o empate, negativo procura o empate. No Armageddon já vem ajustado. "
-                         "Não vale para o Stockfish.", classes="nota")
+                         "No Stockfish vale para o lance que empata na hora: ele só é jogado se a melhor "
+                         "alternativa for pior que -contempt.", classes="nota")
             with Horizontal(classes="campo"):
                 yield Label("Pondering", classes="rotulo")
                 yield Switch(self.sessao.use_ponder, id="ponder")
@@ -730,11 +737,12 @@ O rodapé também aceita clique. Se o terminal capturar alguma tecla F (como F1 
 ## Situações comuns
 - **Digitei errado o lance do adversário:** F2 desfaz e o motor para. Digite o lance certo.
 - **O tabuleiro físico ficou diferente:** F5 e o FEN da posição real.
+- **Relógio (F3):** sincronize a cada uns 10 lances. Isso também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho.
 - **Desempate da melhor de 3 (FAQ item 12):** vale o tempo restante somado nas três partidas. Em posição morta, F6 economiza relógio.
-- **Armageddon:** com o motor próprio, o contempt já vem ajustado (com Brancas evita o empate; com Pretas, procura). O Stockfish não tem contempt: avalia o empate como 0.
-- **Motor:** o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair, reabre sozinho no lance seguinte.
+- **Armageddon:** o empate classifica as Pretas. Com o motor próprio, o contempt já vem ajustado. Com o Stockfish, a regra do empate imediato: com Pretas, se algum lance empata na hora (repetição, 50 lances, afogamento, material insuficiente), o motor joga esse lance; com Brancas, nunca joga lance que empata na hora nem deixa o adversário empatar no lance seguinte. Sem incremento o relógio acaba sozinho (operador): a tela avisa quantos lances faltam para a bandeira de cada lado.
+- **Motor:** o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair ou travar, vale o melhor lance que ele já tinha e o processo reabre; se não reabrir, a partida segue com o motor próprio e a tela avisa.
 - **O notebook travou ou a janela fechou:** rode `python tui.py` de novo e escolha **Retomar partida**. Depois confira os relógios.
-- **A busca falhou:** a interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log. F2 desfaz se a equipe preferir outro lance.
+- **A busca falhou:** só se nem o motor próprio conseguir buscar. A interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log. F2 desfaz se a equipe preferir outro lance.
 - **A interface não abre:** o modo texto continua em `python main.py`.
 
 No tabuleiro, fichas claras são as Brancas e fichas escuras são as Pretas. As letras são R rei, D dama, T torre, B bispo, C cavalo e P peão (F4 troca por símbolos).
@@ -812,6 +820,10 @@ class TelaInicio(Screen):
                             yield Label("min +", classes="unidade")
                             yield Input("10", id="incremento", max_length=4)
                             yield Label("s", classes="unidade")
+                        with Horizontal(id="armageddon-inc"):
+                            yield Label("incremento", classes="unidade")
+                            yield Input("0", id="inc-armageddon", max_length=4)
+                            yield Label("s (confirme com o árbitro)", classes="unidade")
                     with Vertical(classes="grupo"):
                         yield Label("Pondering (O)", classes="rotulo-grupo")
                         yield Switch(True, id="ponder")
@@ -865,6 +877,7 @@ class TelaInicio(Screen):
             operador = ler_num(self.query_one("#operador", Input).value or "4")
             minutos = ler_num(self.query_one("#minutos", Input).value or "15")
             incremento = ler_num(self.query_one("#incremento", Input).value or "0")
+            inc_armageddon = ler_num(self.query_one("#inc-armageddon", Input).value or "0")
         except ValueError:
             return "Confira os números: use algarismos, como 4 ou 2,5."
         ritmo = self._ritmo()
@@ -872,6 +885,8 @@ class TelaInicio(Screen):
             return "O tempo do operador deve ficar entre 0 e 30 segundos."
         if ritmo == "personalizado" and not (0.5 <= minutos <= 180 and 0 <= incremento <= 60):
             return "Ritmo personalizado: de 0,5 a 180 minutos e até 60 segundos de incremento."
+        if ritmo == "armageddon" and not 0 <= inc_armageddon <= 60:
+            return "Incremento do Armageddon: de 0 a 60 segundos."
         return Config(
             our_color=not self.query_one("#cor-b", RadioButton).value,
             ritmo=ritmo,
@@ -881,6 +896,7 @@ class TelaInicio(Screen):
             operador=operador,
             motor="proprio" if self.query_one("#m-proprio", RadioButton).value else "stockfish",
             desempenho=self._desempenho(),
+            inc_armageddon=inc_armageddon if ritmo == "armageddon" else 0.0,
         )
 
     def _desempenho(self) -> str:
@@ -889,6 +905,7 @@ class TelaInicio(Screen):
 
     def _atualizar(self) -> None:
         self.query_one("#personalizado").display = self._ritmo() == "personalizado"
+        self.query_one("#armageddon-inc").display = self._ritmo() == "armageddon"
         config = self._config()
         resumo = self.query_one("#resumo", Static)
         if isinstance(config, str):
@@ -898,10 +915,14 @@ class TelaInicio(Screen):
         cor = COR_PT[config.our_color]
         t = Text()
         if config.ritmo == "armageddon":
-            t.append(f"Jogamos de {cor}, Armageddon com {minutos:g} minutos e sem incremento.\n", style=MARFIM)
-            if config.motor == "stockfish":
-                t.append("O empate classifica as Pretas. O Stockfish não tem contempt: avalia o empate como 0.",
+            sem_inc = "sem incremento" if not inc else f"{inc:g} segundos de incremento"
+            t.append(f"Jogamos de {cor}, Armageddon com {minutos:g} minutos e {sem_inc}.\n", style=MARFIM)
+            if config.motor == "stockfish" and config.our_color == chess.BLACK:
+                t.append("O empate classifica as Pretas: se algum lance empatar na hora, o motor joga esse lance.",
                          style=LATAO)
+            elif config.motor == "stockfish":
+                t.append("O empate classifica as Pretas: o motor não joga lance que empata na hora nem deixa o "
+                         "adversário empatar no lance seguinte.", style=LATAO)
             elif config.our_color == chess.BLACK:
                 t.append("O empate classifica as Pretas: o motor vai procurar o empate (contempt −100).", style=LATAO)
             else:
@@ -978,6 +999,9 @@ class TelaInicio(Screen):
         except Exception as exc:  # noqa: BLE001 - arquivo salvo corrompido
             self.app.notify(f"Não deu para retomar a partida salva: {exc}", severity="error")
             return
+        aviso = sessao.tomar_aviso()
+        if aviso:
+            self.app.notify(aviso, severity="error", timeout=15)
         self.app.switch_screen(TelaPartida(sessao, retomada=True))
 
 
@@ -1234,6 +1258,9 @@ class TelaPartida(Screen):
             return
         self.ultimo_nosso = lance
         self.ultimo_resultado = resultado
+        aviso = self.sessao.tomar_aviso()
+        if aviso:
+            self.app.notify(aviso, severity="error", timeout=15)
         if self.som:
             self.app.bell()
         if self.sessao.encerrada:
@@ -1391,8 +1418,11 @@ class TelaPartida(Screen):
     def _relogio_definido(self, valores) -> None:
         if valores:
             nosso, adv = valores
-            self.sessao.sincronizar(nosso, adv)
-            self.app.notify("Relógios sincronizados.", timeout=2)
+            recalibrado = self.sessao.sincronizar(nosso, adv)
+            if recalibrado:
+                self.app.notify(recalibrado, title="Relógios sincronizados", timeout=10)
+            else:
+                self.app.notify("Relógios sincronizados.", timeout=2)
         self.atualizar_tudo()
 
     def action_ajustes(self) -> None:
@@ -1523,7 +1553,7 @@ class TelaPartida(Screen):
             direita.append("Economia ligada    ", style=f"bold {LATAO}")
         if not s.use_ponder:
             direita.append("Ponder desligado    ", style=GRAFITE)
-        if not s.usa_stockfish and s.engine.contempt != 15:
+        if s.engine.contempt != (0 if s.usa_stockfish else 15):
             direita.append(f"Contempt {s.engine.contempt:+d}    ", style=GRAFITE)
         direita.append(f"{s.nome_motor}    ", style=LATAO if s.usa_stockfish else GRAFITE)
         direita.append(f"Jogamos de {s.nome_cor}    ", style=MARFIM)
@@ -1612,6 +1642,12 @@ class TelaPartida(Screen):
         elif self.ultimo_resultado is not None:
             r = self.ultimo_resultado
             self._linhas_motor(t, r.depth, r.seldepth, r.score_cp, r.nodes, r.elapsed_sec, r.pv, r.source)
+            # Gestão de tempo da equipe: por que este lance saiu mais rápido
+            if s.ultimo_credito > 0:
+                t.append(f"\nPonder acertou: {fmt_tempo(s.ultimo_credito)} pensados no tempo do adversário "
+                         "contaram como já gastos.", style=GRAFITE)
+            if s.time_manager.economia_empate_morto:
+                t.append("\nEmpate morto (nota 0,00 estável): este lance usou 30% do tempo.", style=GRAFITE)
         else:
             t.append("O motor ainda não jogou nesta partida.", style=GRAFITE)
         if s.use_ponder and self.fase == "adversario" and not s.encerrada:
@@ -1628,6 +1664,9 @@ class TelaPartida(Screen):
         elif origem == "EMERGENCY":
             t.append("Lance de emergência: a busca falhou e o lance saiu da avaliação em 1 lance.\n",
                      style=f"bold {BANDEIRA}")
+        elif origem == "REGRA_EMPATE":
+            t.append("Regra do empate imediato (Armageddon ou contempt): lance escolhido pela regra da equipe.\n",
+                     style=f"bold {LATAO}")
         else:
             t.append(f"Profundidade {prof}", style=f"bold {MARFIM}")
             t.append(f" (seletiva {seletiva})    ", style=GRAFITE)
@@ -1662,7 +1701,7 @@ class TelaPartida(Screen):
                     linha_aberta = True
                 t.append(f"{lance.uci:<6}", style=f"bold {LATAO}" if lance.nosso else MARFIM)
                 marca = {"BOOK": "livro", "SYZYGY_TB": "tb", "MANUAL": "manual",
-                         "EMERGENCY": "emerg."}.get(lance.origem, "")
+                         "EMERGENCY": "emerg.", "REGRA_EMPATE": "empate"}.get(lance.origem, "")
                 t.append(f"{marca:<7}", style=GRAFITE)
                 if vez == chess.BLACK:
                     numero += 1

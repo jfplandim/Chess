@@ -17,6 +17,7 @@ pensar e quando parar (motor_stockfish.py).
 import os
 import sys
 import threading
+import time
 
 import chess
 
@@ -59,6 +60,10 @@ class UCIEngine:
         self.threads: int | None = None  # só para o Stockfish; None = todos os núcleos
         self.ponder_go: list[str] | None = None  # o "go ponder" em andamento, sem a palavra "ponder"
         self.silenciar = threading.Event()  # cala a busca de ponder quando ela vira busca normal
+        # Crédito do ponder (time_manager.py ideia 6): no "ponderhit" o tempo do ponder conta como já gasto
+        self.ponder_inicio: float | None = None
+        self.ponder_prof = 0
+        self.credito_proximo = 0.0
 
     # ------------------------------------------------------------------
     def _get_logger(self) -> MatchLogger | None:
@@ -181,6 +186,11 @@ class UCIEngine:
         # "Move Overhead": tempo perdido por lance fora do motor (latência da GUI ou operador humano)
         tm = TimeManager(initial_minutes=15.0, increment_seconds=0.0,
                          move_overhead=min(overhead, 0.2), operator_overhead=overhead)
+        if ponder:
+            self.ponder_inicio, self.ponder_prof, self.credito_proximo = time.perf_counter(), 0, 0.0
+        else:
+            tm.dar_credito_ponder(self.credito_proximo)  # > 0 só logo depois de um "ponderhit"
+            self.credito_proximo, self.ponder_inicio = 0.0, None
         us_white = board.turn == chess.WHITE
         t_key, i_key = ("wtime", "winc") if us_white else ("btime", "binc")
         if "movetime" in params:
@@ -211,6 +221,8 @@ class UCIEngine:
             self.ponder_event.clear()
 
         def info_cb(depth, seldepth, score, nodes, elapsed, pv):
+            if ponder:
+                self.ponder_prof = max(self.ponder_prof, depth)
             nps = int(nodes / max(elapsed, 1e-3))
             _send(
                 f"info depth {depth} seldepth {seldepth} score {_uci_score(score)} nodes {nodes} "
@@ -313,6 +325,8 @@ class UCIEngine:
                 # nenhuma busca quando o adversário respondia rápido.
                 if self.ponder_go is not None:
                     self.silenciar.set()
+                    if self.ponder_inicio is not None and self.ponder_prof >= 6:
+                        self.credito_proximo = time.perf_counter() - self.ponder_inicio
                     self.cmd_go(self.ponder_go)  # o cmd_go para a busca de ponder antes de começar
                 else:
                     self.stop_search()

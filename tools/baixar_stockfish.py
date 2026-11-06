@@ -128,7 +128,16 @@ def main() -> int:
                 zz.extractall(destino)  # o zipfile descarta caminhos absolutos e "..": nada sai da pasta
         else:
             with tarfile.open(pacote) as tt:
-                tt.extractall(destino, filter="data")  # filtro "data": nada sai da pasta de destino
+                if hasattr(tarfile, "data_filter"):
+                    tt.extractall(destino, filter="data")  # filtro "data": nada sai da pasta de destino
+                else:
+                    # Python sem o filtro (ex.: 3.11.2 do Debian 12): a mesma conferência, feita aqui
+                    raiz = os.path.realpath(destino)
+                    for membro in tt.getmembers():
+                        alvo = os.path.realpath(os.path.join(destino, membro.name))
+                        if not (membro.isfile() or membro.isdir()) or os.path.commonpath([raiz, alvo]) != raiz:
+                            raise SystemExit(f"Arquivo suspeito no pacote: {membro.name}. Nada foi instalado.")
+                    tt.extractall(destino)
 
     caminho = executavel(destino)
     if caminho is None:
