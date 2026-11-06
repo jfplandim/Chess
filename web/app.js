@@ -685,23 +685,178 @@ function abrirAjustes() {
   abrir("#dlg-ajustes");
 }
 
+// ---------------------------------------------------------------- editor do tabuleiro (F5)
+// O operador deixa o tabuleiro igual ao da mesa. O web.py diz o que vai acontecer antes de aplicar:
+// nada, desfazer/registrar lances (a súmula continua) ou trocar a posição inteira.
+const PECAS_EDITOR = ["K", "Q", "R", "B", "N", "P", "k", "q", "r", "b", "n", "p"];
+const NOMES_PECA = { k: "rei", q: "dama", r: "torre", b: "bispo", n: "cavalo", p: "peão" };
+let editor = null;   // { pecas, vez, roque, resto, ferramenta, origem, doEditor }
+
+function lerFen(fen) {
+  const [posicao = "", vez = "w", roque = "-", ...resto] = fen.trim().split(/\s+/);
+  const pecasFen = {};
+  const fileiras = posicao.split("/");
+  if (fileiras.length !== 8) return null;
+  for (let i = 0; i < 8; i++) {
+    let coluna = 0;
+    for (const c of fileiras[i]) {
+      if (/[1-8]/.test(c)) coluna += Number(c);
+      else if (PECAS_EDITOR.includes(c) && coluna < 8) pecasFen[COLUNAS[coluna++] + (8 - i)] = c;
+      else return null;
+    }
+  }
+  return { pecas: pecasFen, vez: vez === "b" ? "b" : "w", roque: roque === "-" ? "" : roque, resto };
+}
+
+function fenDoEditor() {
+  const fileiras = [];
+  for (let r = 8; r >= 1; r--) {
+    let linha = "";
+    let vazias = 0;
+    for (const c of COLUNAS) {
+      const p = editor.pecas[c + r];
+      if (p) {
+        if (vazias) linha += vazias;
+        linha += p;
+        vazias = 0;
+      } else vazias++;
+    }
+    fileiras.push(linha + (vazias || ""));
+  }
+  const roque = "KQkq".split("").filter((c) => editor.roque.includes(c)).join("") || "-";
+  const resto = editor.resto.length >= 3 ? editor.resto : ["-", "0", "1"];
+  return [fileiras.join("/"), editor.vez, roque, ...resto].join(" ");
+}
+
+function carregarEditor(fen, doEditor = true) {
+  const lido = lerFen(fen);
+  if (!lido) return false;
+  editor = { ...lido, ferramenta: editor ? editor.ferramenta : "mover", origem: null, doEditor };
+  return true;
+}
+
+function desenharEditor() {
+  const brancasEmbaixo = E.nossa_cor === "w";
+  const casas = [];
+  for (let linha = 0; linha < 8; linha++) {
+    for (let coluna = 0; coluna < 8; coluna++) {
+      const f = brancasEmbaixo ? coluna : 7 - coluna;
+      const r = brancasEmbaixo ? 7 - linha : linha;
+      const casa = COLUNAS[f] + (r + 1);
+      const peca = editor.pecas[casa];
+      const classes = ["casa", (f + r) % 2 === 1 ? "clara" : "escura"];
+      if ((E.pecas[casa] || null) !== (peca || null)) classes.push("diferente");
+      if (casa === editor.origem) classes.push("origem-mover");
+      let conteudo = peca ? `<img class="peca" alt="" src="${pecas[peca] || ""}">` : "";
+      if (coluna === 0) conteudo += `<span class="coord fileira">${r + 1}</span>`;
+      if (linha === 7) conteudo += `<span class="coord coluna">${COLUNAS[f]}</span>`;
+      casas.push(`<div class="${classes.join(" ")}" data-casa="${casa}">${conteudo}</div>`);
+    }
+  }
+  $("#editor-tabuleiro").innerHTML = casas.join("");
+  document.querySelectorAll("#ferramentas [data-ferramenta]").forEach((b) => {
+    b.classList.toggle("ativa", b.dataset.ferramenta === editor.ferramenta);
+  });
+  document.querySelectorAll('input[name="editor-vez"]').forEach((r) => { r.checked = r.value === editor.vez; });
+  document.querySelectorAll("[data-roque]").forEach((c) => { c.checked = editor.roque.includes(c.dataset.roque); });
+}
+
+function editorMudou() {
+  editor.doEditor = true;
+  $("#fen").value = fenDoEditor();
+  desenharEditor();
+  agendarValidacao();
+}
+
+function cliqueNoEditor(ev, apagar = false) {
+  const el = ev.target.closest(".casa");
+  if (!el || !editor) return;
+  ev.preventDefault();
+  const casa = el.dataset.casa;
+  const ferramenta = apagar ? "apagar" : editor.ferramenta;
+  if (ferramenta === "apagar") {
+    delete editor.pecas[casa];
+    editor.origem = null;
+  } else if (ferramenta === "mover") {
+    if (editor.origem === null) {
+      if (!editor.pecas[casa]) return;
+      editor.origem = casa;
+      desenharEditor();
+      return;
+    }
+    if (casa !== editor.origem) {
+      editor.pecas[casa] = editor.pecas[editor.origem];
+      delete editor.pecas[editor.origem];
+    }
+    editor.origem = null;
+  } else if (editor.pecas[casa] === ferramenta) {
+    delete editor.pecas[casa];   // clicar de novo com a mesma peça tira
+  } else {
+    editor.pecas[casa] = ferramenta;
+  }
+  editorMudou();
+}
+
 function abrirPosicao() {
+  carregarEditor(E.fen);
+  editor.ferramenta = "mover";
   $("#fen").value = E.fen;
+  desenharEditor();
   validarFen();
   abrir("#dlg-posicao");
-  $("#fen").select();
+}
+
+function agendarValidacao() {
+  clearTimeout(temporizadorFen);
+  temporizadorFen = setTimeout(validarFen, 120);
+}
+
+function desenharAnalise(r) {
+  const caixa = $("#editor-analise");
+  if (!r.valido) {
+    caixa.innerHTML = `<p class="invalida">Ainda não dá para aplicar: ${esc(r.mensagem)}</p>`;
+    return;
+  }
+  const a = r.analise;
+  if (!a) {
+    caixa.innerHTML = "";
+    return;
+  }
+  const titulo = { igual: "Igual ao sistema", conciliar: "Explicado por lances", nova: "Posição nova" }[a.tipo];
+  let html = `<p class="${a.tipo}"><b>${titulo}.</b> `;
+  if (a.tipo === "conciliar") html += "Ao aplicar, o sistema vai:</p><ul>"
+    + a.passos.map((p) => `<li>${esc(p)}</li>`).join("")
+    + `</ul><p class="nota">Depois, vez das ${esc(a.vez)}. A súmula e o histórico de repetição continuam.</p>`;
+  else html += `${esc(a.texto)}</p>`;
+  if (a.casas.length) {
+    html += `<p class="nota">Casas diferentes do sistema: ${a.casas.map((c) =>
+      `${esc(c.casa)} (${esc(c.antes)} → ${esc(c.depois)})`).join(", ")}</p>`;
+  }
+  caixa.innerHTML = html;
 }
 
 async function validarFen() {
-  const r = await api("/api/validar-fen", { fen: $("#fen").value }, { atualizar: false, silencioso: true });
+  const doEditor = !!(editor && editor.doEditor);
+  const r = await api("/api/validar-fen", { fen: $("#fen").value, editor: doEditor }, { atualizar: false, silencioso: true });
   if (!r || r.erro) return;
   const p = $("#fen-validacao");
   p.textContent = r.mensagem;
   p.style.color = r.valido ? "var(--feltro)" : "var(--bandeira)";
+  desenharAnalise(r);
+  // Roque impossível na posição montada sai sozinho: o editor mostra o que vai valer
+  if (r.valido && doEditor && editor && $("#dlg-posicao").open) {
+    const lido = lerFen(r.fen);
+    if (lido && lido.roque !== editor.roque) {
+      editor.roque = lido.roque;
+      $("#fen").value = fenDoEditor();
+      desenharEditor();
+    }
+  }
 }
 
-async function aplicarPosicao(fen) {
-  const r = await apiDialogo("/api/posicao", { fen }, "#fen-validacao");
+async function aplicarPosicao() {
+  const doEditor = !!(editor && editor.doEditor);
+  const r = await apiDialogo("/api/posicao", { fen: $("#fen").value, editor: doEditor }, "#fen-validacao");
   if (r) $("#dlg-posicao").close("ok");
 }
 
@@ -808,14 +963,48 @@ function ligarEventos() {
   });
 
   $("#fen").addEventListener("input", () => {
-    clearTimeout(temporizadorFen);
-    temporizadorFen = setTimeout(validarFen, 120);
+    // FEN digitado vale como está (contadores inclusive); o editor acompanha quando dá para ler
+    if (carregarEditor($("#fen").value, false)) desenharEditor();
+    else if (editor) editor.doEditor = false;
+    agendarValidacao();
   });
   $("#form-posicao").addEventListener("submit", (ev) => {
     ev.preventDefault();
-    aplicarPosicao($("#fen").value);
+    aplicarPosicao();
   });
-  $("#posicao-inicial").addEventListener("click", () => aplicarPosicao(POSICAO_INICIAL));
+  $("#ferramentas-pecas").innerHTML = PECAS_EDITOR.map((p) => {
+    const nome = `${NOMES_PECA[p.toLowerCase()]} ${p === p.toUpperCase() ? "das Brancas" : "das Pretas"}`;
+    return `<button type="button" class="ferramenta" data-ferramenta="${p}" title="Colocar ${nome}" aria-label="${nome}">`
+      + `<img alt="" data-peca="${p}"></button>`;
+  }).join("");
+  $("#ferramentas").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-ferramenta]");
+    if (!b || !editor) return;
+    editor.ferramenta = b.dataset.ferramenta;
+    editor.origem = null;
+    desenharEditor();
+  });
+  $("#editor-tabuleiro").addEventListener("click", (ev) => cliqueNoEditor(ev));
+  $("#editor-tabuleiro").addEventListener("contextmenu", (ev) => cliqueNoEditor(ev, true));
+  document.querySelectorAll('input[name="editor-vez"]').forEach((r) => r.addEventListener("change", () => {
+    editor.vez = r.value;
+    editorMudou();
+  }));
+  document.querySelectorAll("[data-roque]").forEach((c) => c.addEventListener("change", () => {
+    const k = c.dataset.roque;
+    editor.roque = c.checked ? editor.roque + k : editor.roque.replace(k, "");
+    editorMudou();
+  }));
+  $("#posicao-atual").addEventListener("click", () => {
+    carregarEditor(E.fen);
+    $("#fen").value = E.fen;
+    desenharEditor();
+    validarFen();
+  });
+  $("#posicao-inicial").addEventListener("click", () => {
+    carregarEditor(POSICAO_INICIAL);
+    editorMudou();
+  });
 
   $("#dlg-promocao").addEventListener("keydown", (ev) => teclaDialogo(ev,
     { q: "q", d: "q", r: "r", t: "r", b: "b", n: "n", c: "n" }));
@@ -870,6 +1059,7 @@ async function iniciar() {
     }
   } catch (erro) { /* sem desenho, a peça fica vazia até a próxima carga */ }
   ligarEventos();
+  document.querySelectorAll("#ferramentas-pecas img[data-peca]").forEach((img) => { img.src = pecas[img.dataset.peca] || ""; });
   ciclo();
 }
 
