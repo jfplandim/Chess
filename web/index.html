@@ -268,10 +268,11 @@
       <ul>
         <li><b>Digitei errado o lance do adversário:</b> Desfazer (F2); o motor para. Digite o lance certo.</li>
         <li><b>O tabuleiro físico ficou diferente:</b> Posição (F5) e o FEN da posição real.</li>
+        <li><b>Relógio (F3):</b> sincronize a cada uns 10 lances. Isso também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho.</li>
         <li><b>Desempate da melhor de 3 (FAQ item 12):</b> vale o tempo restante somado nas três partidas. Em posição morta, Economia (F6) guarda relógio.</li>
         <li><b>Armageddon:</b> com o motor próprio, o contempt já vem ajustado (com Brancas evita o empate; com Pretas, procura). O Stockfish não tem contempt: avalia o empate como 0.</li>
-        <li><b>Motor:</b> o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair, reabre sozinho no lance seguinte.</li>
-        <li><b>A busca falhou:</b> entra um lance de emergência (avaliação em 1 lance), com aviso na tela e no log.</li>
+        <li><b>Motor:</b> o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair ou travar, vale o melhor lance que ele já tinha e o processo reabre; se não reabrir, a partida segue com o motor próprio e a tela avisa.</li>
+        <li><b>A busca falhou:</b> só se nem o motor próprio conseguir buscar. Entra um lance de emergência (avaliação em 1 lance), com aviso na tela e no log.</li>
         <li><b>A página fechou ou travou:</b> abra o endereço de novo; a partida continua no web.py. Se o web.py fechou, rode-o de novo e escolha <b>Retomar partida</b>.</li>
       </ul>
       <p class="nota">Na súmula, os nossos lances aparecem em amarelo; <i>livro</i> é lance do livro de aberturas, <i>tb</i> de tablebase e <i>manual</i> registrado pela equipe.

@@ -13,10 +13,15 @@ Ideias principais (para a Arguição da Banca):
    - nota caindo / "fail-low" na raiz          -> pensa mais (perigo tático);
    - melhor lance estável por várias iterações -> economiza relógio.
 4. Uma nova profundidade só começa se houver tempo provável para terminá-la.
-5. Nunca perder por tempo: margem de segurança fixa + modo de emergência.
+5. Nunca perder por tempo: margem de segurança fixa + zona de sobrevivência com o relógio baixo
+   (o alvo cai para metade do incremento líquido mais 1/25 do relógio; o resto do incremento
+   reconstrói o relógio).
 """
 
+import math
+import re
 import time
+
 import chess
 
 
@@ -101,11 +106,21 @@ class TimeManager:
         usable = max(usable, remaining * 0.05)
         optimum = usable / mtg * self.time_factor
 
-        # Modo de emergência (relógio muito baixo)
-        if remaining < 20.0:
-            optimum = min(optimum, remaining / 25.0 + 0.4 * self.increment)
+        # Zona de sobrevivência (relógio baixo): com poucos lances de folga no relógio, o alvo cai
+        # para METADE do incremento líquido (incremento - operador) mais relógio/25. O resto do
+        # incremento reconstrói o relógio a cada lance, mesmo que o operador demore um pouco mais
+        # do que o configurado. 15+10 com operador de 4 s: abaixo de 42 s, alvo de no máximo
+        # 3 s + relógio/25 e limite rígido de no máximo 6 s.
+        liquido = max(0.0, self.increment - self.operator_overhead)
+        zona = max(20.0, 6.0 * (self.operator_overhead + 0.5 * liquido))
+        if remaining < zona:
+            optimum = min(optimum, remaining / 25.0 + 0.5 * liquido)
 
         hard = min(optimum * 3.5, remaining * 0.18 + 0.5 * self.increment, afford)
+        if remaining < zona:
+            # Nem no pior caso (posição instável, busca até o limite) o relógio desce na zona:
+            # pensar no máximo o incremento líquido mantém o relógio onde está.
+            hard = min(hard, max(optimum, liquido))
         hard = max(hard, 0.05)
         optimum = min(optimum, hard)
 
@@ -175,3 +190,27 @@ class TimeManager:
         mins = int(seconds // 60)
         secs = int(seconds % 60)
         return f"{mins:02d}:{secs:02d}"
+
+
+_MM_SS = re.compile(r"(\d{1,3}):(\d{1,2})|(\d{1,3})[.,](\d{2})")  # 12:30, ou 12.30 digitado com ponto
+_SEGUNDOS = re.compile(r"\d{1,5}([.,]\d)?")                         # 750, ou 19.5 (décimos, relógio digital)
+
+
+def ler_relogio(texto: str) -> float:
+    """
+    O que o relógio físico mostra: MM:SS (12:30, também com ponto: 12.30) ou só segundos (750, ou
+    19.5 com décimos). Levanta ValueError com a explicação para o operador (segundos de 00 a 59,
+    nada de negativo, infinito ou letras).
+    """
+    t = texto.strip()
+    m = _MM_SS.fullmatch(t)
+    if m:
+        minutos, segundos = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        if int(segundos) >= 60:
+            raise ValueError("Os segundos vão de 00 a 59, como 12:30.")
+        return int(minutos) * 60.0 + int(segundos)
+    if _SEGUNDOS.fullmatch(t):
+        valor = float(t.replace(",", "."))
+        if math.isfinite(valor):
+            return valor
+    raise ValueError("Não entendi o tempo. Use MM:SS, como 12:30, ou só segundos, como 750.")

@@ -35,7 +35,6 @@ import chess.svg
 
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
-from main import parse_clock_input
 from motor_stockfish import (
     NIVEIS_DESEMPENHO,
     MotorIndisponivel,
@@ -44,7 +43,7 @@ from motor_stockfish import (
     recursos_do_nivel,
     verificar_stockfish,
 )
-from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva
+from session import COR_PT, Config, GameSession, arquivar_partida_salva, ler_lance, ler_partida_salva, ler_relogio
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_WEB = os.path.join(BASE_DIR, "web")
@@ -245,6 +244,9 @@ class Controlador:
             return
         self.ultimo_nosso = lance
         self.ultimo_resultado = resultado
+        aviso = s.tomar_aviso()
+        if aviso:
+            self._avisar(aviso, "erro", "Motor reserva")
         self.contador_som += 1
         self.fase = "fim" if s.encerrada else "adversario"
         self._mudou()
@@ -325,6 +327,9 @@ class Controlador:
             self._entrar_turno(auto=False)
             self.pedir_relogio = self.versao
             self._avisar("Partida retomada. Confira os relógios físicos.", "info", "Retomar")
+            aviso = sessao.tomar_aviso()
+            if aviso:
+                self._avisar(aviso, "erro", "Motor reserva")
         return {"ok": True}
 
     def ler(self, dados: dict) -> dict:
@@ -411,14 +416,21 @@ class Controlador:
 
     def relogio(self, dados: dict) -> dict:
         try:
-            nosso = parse_clock_input(str(dados.get("nosso", "")))
+            nosso = ler_relogio(str(dados.get("nosso", "")))
             texto_adv = str(dados.get("adv", "")).strip()
-            adv = parse_clock_input(texto_adv) if texto_adv else None
-        except (ValueError, IndexError):
-            raise ErroOperador("Não entendi o tempo. Use MM:SS, como 12:30, ou segundos, como 750.") from None
+            adv = ler_relogio(texto_adv) if texto_adv else None
+        except ValueError as erro:
+            raise ErroOperador(str(erro)) from None
         with self.trava:
-            self._exigir_partida().sincronizar(nosso, adv)
-            self._avisar("Relógios sincronizados.", "ok")
+            s = self._exigir_partida()
+            suspeita = s.suspeita_relogio(nosso, adv)
+            if suspeita and not dados.get("confirmar"):
+                return {"confirmar": f"{suspeita} Sincronizar de novo confirma."}
+            recalibrado = s.sincronizar(nosso, adv)
+            if recalibrado:
+                self._avisar(recalibrado, "info", "Relógios sincronizados")
+            else:
+                self._avisar("Relógios sincronizados.", "ok")
         return {"ok": True}
 
     def ajustes(self, dados: dict) -> dict:

@@ -35,13 +35,14 @@ from main import (
 from motor_stockfish import (
     NOME_DESEMPENHO,
     NOME_MOTOR,
+    MotorIndisponivel,
     MotorStockfish,
     criar_motor,
     descrever_motor,
     motor_padrao,
 )
 from search import SearchResult
-from time_manager import TimeManager
+from time_manager import TimeManager, ler_relogio  # noqa: F401 - ler_relogio: usado pelas interfaces
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
@@ -50,6 +51,7 @@ ARQUIVO_SALVO_ANTERIOR = os.path.join(LOGS_DIR, "partida_salva_anterior.json")
 VERSAO_SALVO = 1
 
 COR_PT = {chess.WHITE: "Brancas", chess.BLACK: "Pretas"}
+LANCES_PARA_LEMBRAR_RELOGIO = 15  # lances nossos sem F3 até a tela lembrar de sincronizar
 
 # Ritmos fixos: (minutos, incremento em segundos). No Armageddon os minutos dependem da cor.
 RITMOS_FIXOS = {
@@ -179,7 +181,21 @@ _UCI = re.compile(r"[a-h][1-8][a-h][1-8][qrbn]?")
 
 
 def ler_lance(board: chess.Board, texto: str) -> Leitura:
-    """Interpreta UCI (g8f6, e7e8q), só a casa de origem (g8) ou SAN como reserva (Nf6, O-O)."""
+    """
+    Interpreta UCI (g8f6, e7e8q), só a casa de origem (g8) ou SAN como reserva (Nf6, O-O).
+    Roda a cada tecla digitada: nenhuma entrada pode derrubar a interface, e "ok" só sai com um
+    lance legal de verdade (nunca o lance nulo "0000" ou "--", que passaria a vez).
+    """
+    try:
+        leitura = _ler_lance(board, texto)
+    except Exception:  # noqa: BLE001 - texto inesperado vira erro na tela, não exceção
+        return Leitura("erro", "Não entendi. Use a casa de origem e a de destino, como g8f6.")
+    if leitura.estado in ("ok", "promocao") and (not leitura.lance or leitura.lance not in board.legal_moves):
+        return Leitura("erro", "Não entendi. Use a casa de origem e a de destino, como g8f6.")
+    return leitura
+
+
+def _ler_lance(board: chess.Board, texto: str) -> Leitura:
     bruto = texto.strip()
     if not bruto:
         return Leitura("vazio", "Digite o lance anunciado, como e7e5. Roque: e1g1. Promoção: e7e8q.")
@@ -215,6 +231,12 @@ def ler_lance(board: chess.Board, texto: str) -> Leitura:
         if not peca_do_lado(origem):
             return Leitura("erro", f"Não há peça das {lado} em {t[:2]}.", origem=origem)
         destinos = destinos_de(origem)
+        if origem == destino:
+            return Leitura(
+                "erro", f"A origem e o destino são a mesma casa ({t[:2]}). "
+                f"{nome_peca(origem)} de {t[:2]} pode ir para {_lista_casas(destinos) or 'nenhuma casa agora'}.",
+                origem=origem, destinos=destinos,
+            )
         lance = chess.Move.from_uci(t)
         promove = board.piece_type_at(origem) == chess.PAWN and chess.square_rank(destino) in (0, 7)
         if promove and lance.promotion is None and chess.Move(origem, destino, chess.QUEEN) in legais:
@@ -240,12 +262,30 @@ def ler_lance(board: chess.Board, texto: str) -> Leitura:
     candidatos = [bruto, bruto.replace("0", "O")]
     if bruto[0] in "nbrqk":
         candidatos.append(bruto[0].upper() + bruto[1:])
+    if bruto[0] == "b":
+        # Em minúsculas, "bxc5" pode ser o peão da coluna b ou o bispo (Bxc5): nunca escolher sozinho
+        lances_b = set()
+        for candidato in (bruto, "B" + bruto[1:]):
+            try:
+                lance_b = board.parse_san(candidato)
+            except ValueError:
+                continue
+            if lance_b in legais:
+                lances_b.add(lance_b)
+        if len(lances_b) > 1:
+            peao, bispo = sorted(lances_b, key=lambda m: board.piece_type_at(m.from_square))
+            return Leitura(
+                "erro", f"Ambíguo: \"{bruto}\" pode ser o peão ({peao.uci()}) ou o bispo ({bispo.uci()}). "
+                "Digite em UCI.",
+            )
     for candidato in candidatos:
         try:
             lance = board.parse_san(candidato)
         except chess.AmbiguousMoveError:
             return Leitura("erro", "Lance ambíguo. Digite em UCI, com a casa de origem (ex.: b8d7).")
         except ValueError:
+            continue
+        if not lance or lance not in legais:  # "--", "0000" e "Z0" são o lance nulo para o python-chess
             continue
         return Leitura(
             "ok", f"{descrever(board, lance)}. Em UCI: {lance.uci()}",
@@ -322,6 +362,11 @@ class GameSession:
         self.resultado: tuple[str, str] | None = None   # (placar, motivo)
         self.encerrada = False
         self.fator_antes_economia: float | None = None
+        self.aviso: str | None = None   # aviso importante para a interface mostrar (ex.: troca de motor)
+        # Calibração do custo do operador pelo relógio físico (ver sincronizar)
+        self.operador_inicial = config.operador
+        self.lances_desde_sincronia = 0
+        self.calibracao_valida = True
         if logger is None:
             logger = MatchLogger(team_color=COR_PT[self.our_color].upper())
             logger.log_event(f"Motor: {descrever_motor(self.engine)}")
@@ -384,14 +429,46 @@ class GameSession:
         if self.board.halfmove_clock >= 80:
             faltam = (100 - self.board.halfmove_clock + 1) // 2
             avisos.append(f"Regra dos 50 lances: faltam {faltam} lances sem captura nem lance de peão.")
+        if self.lances_desde_sincronia >= LANCES_PARA_LEMBRAR_RELOGIO:
+            # Sem sincronizar, o motor não sabe se o operador demora mais do que o configurado
+            avisos.append(f"Confira o relógio físico (F3): {self.lances_desde_sincronia} lances nossos sem sincronizar.")
         return avisos
 
     # ------------------------------------------------------------------
     # Lances
     # ------------------------------------------------------------------
     def pensar(self, board: chess.Board, stop_event: threading.Event, info_callback=None) -> SearchResult:
-        """Busca o nosso lance numa cópia do tabuleiro. Roda fora da thread da interface."""
+        """
+        Busca o nosso lance numa cópia do tabuleiro. Roda fora da thread da interface.
+        Se o Stockfish cair e não reabrir, a partida segue com o motor próprio: o relógio não para.
+        """
         self.ponder_ctrl.stop_ponder()
+        try:
+            return self._buscar(board, stop_event, info_callback)
+        except MotorIndisponivel as erro:
+            if not self.usa_stockfish or stop_event.is_set():
+                raise
+            self._trocar_para_reserva(erro)
+            return self._buscar(board, stop_event, info_callback)
+
+    def _trocar_para_reserva(self, erro: Exception) -> None:
+        from search import SearchEngine
+
+        reserva = SearchEngine()
+        reserva.our_color = self.our_color
+        if self.config.ritmo == "armageddon":
+            reserva.contempt = ARMAGEDDON_CONTEMPT if self.our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
+        self.engine = reserva
+        self.ponder_ctrl = PonderController(reserva)
+        self.aviso = "O Stockfish caiu e não reabriu: a partida segue com o motor próprio da equipe."
+        self.logger.log_event(f"{self.aviso} Detalhe: {erro}")
+
+    def tomar_aviso(self) -> str | None:
+        """Aviso pendente para a interface (mostrado uma vez)."""
+        aviso, self.aviso = self.aviso, None
+        return aviso
+
+    def _buscar(self, board: chess.Board, stop_event: threading.Event, info_callback) -> SearchResult:
         return self.engine.search_best_move(
             board=board,
             time_manager=self.time_manager,
@@ -410,6 +487,7 @@ class GameSession:
             raise ValueError(f"O lance {move.uci()} não é legal na posição atual.")
         gasto = time.perf_counter() - self.inicio_turno
         self.time_manager.register_move_time(gasto)
+        self.lances_desde_sincronia += 1
         self.logger.log_engine_move(
             move_number=self.board.fullmove_number,
             turn_color=self.our_color,
@@ -451,6 +529,7 @@ class GameSession:
         """Lance nosso escolhido pela equipe (ex.: regra da peça tocada); vai ao log como MANUAL."""
         gasto = time.perf_counter() - self.inicio_turno
         self.time_manager.register_move_time(gasto)
+        self.lances_desde_sincronia += 1
         self.board.push(move)
         avaliacao = -evaluate_board(self.board, check_terminal=True)
         self.board.pop()
@@ -518,6 +597,7 @@ class GameSession:
         self.lance_previsto = None
         self.resultado, self.encerrada = None, False
         self.inicio_turno = time.perf_counter()
+        self.calibracao_valida = False
         self.salvar()
         return desfeitos
 
@@ -539,23 +619,81 @@ class GameSession:
         self.lance_previsto = None
         self.resultado, self.encerrada = None, False
         self.inicio_turno = time.perf_counter()
+        self.calibracao_valida = False
         self.logger.log_event(f"Posição ajustada via FEN: {board.fen()}")
         self._verificar_fim()
         self.salvar()
 
-    def sincronizar(self, nosso: float, adv: float | None) -> None:
-        """O relógio físico é a referência: o turno atual volta a contar a partir de agora."""
+    def suspeita_relogio(self, nosso: float, adv: float | None) -> str | None:
+        """
+        Valor que dificilmente está no relógio físico (erro de digitação, como 1230 no lugar de 12:30):
+        a interface pede confirmação antes de sincronizar. None quando o valor é plausível.
+        """
+        minutos, inc = self.config.relogio()
+        maximo = minutos * 60.0 + inc * (len(self.board.move_stack) // 2 + 1)
+        fmt = TimeManager.format_clock
+        for valor, qual in ((nosso, "o nosso relógio"), (adv, "o relógio do adversário")):
+            if valor is not None and valor > maximo + 1.0:
+                return (f"{fmt(valor)} passa do máximo que {qual} pode ter agora ({fmt(maximo)}). "
+                        "Confira se digitou MM:SS, como 12:30.")
+        estimado = self.relogios()[0]
+        if abs(nosso - estimado) > max(60.0, 0.3 * estimado):
+            return f"O nosso relógio estava em {fmt(estimado)} e foi digitado {fmt(nosso)}."
+        return None
+
+    def sincronizar(self, nosso: float, adv: float | None) -> str | None:
+        """
+        O relógio físico é a referência: o turno atual volta a contar a partir de agora.
+        Devolve o aviso da recalibração do operador, se houve (para a interface mostrar).
+        """
+        estimado = self.relogios()[0]
+        aviso = self._calibrar_operador(estimado, nosso)
         self.time_manager.sync_clocks(nosso, adv)
         self.inicio_turno = time.perf_counter()
+        self.lances_desde_sincronia = 0
+        self.calibracao_valida = True
         extra = f" (adversário {adv:.1f}s)" if adv is not None else ""
         self.logger.log_event(f"Relógio sincronizado para {nosso:.1f}s{extra}")
+        if aviso:
+            self.logger.log_event(aviso)
         self.salvar()
+        return aviso
+
+    def _calibrar_operador(self, estimado: float, fisico: float) -> str | None:
+        """
+        O relógio interno desconta o custo CONFIGURADO do operador a cada lance nosso; o físico, o
+        custo REAL. A diferença dividida pelos lances desde a última sincronização é o quanto o
+        operador demora a mais por lance. Só sobe o custo (pensar menos é o lado seguro): se o
+        árbitro parar o relógio, o relógio físico fica "sobrando" e isso não pode fazer o motor
+        pensar mais. Desfazer, FEN e retomada invalidam a medida até a próxima sincronização.
+        """
+        n = self.lances_desde_sincronia
+        if not self.calibracao_valida or n < 3:
+            return None
+        tm = self.time_manager
+
+        def virgula(x: float) -> str:
+            return f"{x:.1f}".replace(".", ",")
+
+        a_mais = (estimado - fisico) / n
+        if a_mais > 8.0:
+            # Muito para ser só o operador: relógio digitado errado, ou tempo parado por outro motivo
+            return (f"O relógio físico está {virgula(estimado - fisico)} s abaixo do interno em {n} lances: "
+                    "é muito para ser só o operador, então o custo por lance não mudou.")
+        novo = round(min(15.0, max(self.operador_inicial, tm.operator_overhead + a_mais)), 1)
+        if novo - tm.operator_overhead < 0.5:
+            return None
+        antigo, tm.operator_overhead = tm.operator_overhead, novo
+        return (f"Custo do operador recalibrado pelo relógio físico: {virgula(antigo)} s para {virgula(novo)} s "
+                f"por lance (média de {n} lances). Mude em Ajustes (F4) se preferir outro valor.")
 
     def ajustar(self, operador: float | None = None, fator: float | None = None,
                 contempt: int | None = None, ponder: bool | None = None) -> None:
         tm = self.time_manager
         if operador is not None and abs(operador - tm.operator_overhead) > 1e-9:
             tm.operator_overhead = max(0.0, operador)
+            self.operador_inicial = tm.operator_overhead  # a equipe escolheu: vira a nova base
+            self.calibracao_valida = False
             self.logger.log_event(f"Custo do operador ajustado para {tm.operator_overhead:.1f}s")
         if fator is not None and abs(fator - tm.time_factor) > 1e-9:
             tm.time_factor = min(3.0, max(0.1, fator))
@@ -624,6 +762,7 @@ class GameSession:
             "relogio_nosso": nosso,
             "relogio_adv": adv,
             "operador": self.time_manager.operator_overhead,
+            "operador_inicial": self.operador_inicial,
             "fator": self.time_manager.time_factor,
             "fator_antes_economia": self.fator_antes_economia,
             "contempt": self.engine.contempt,
@@ -653,7 +792,14 @@ class GameSession:
         cfg.setdefault("desempenho", "ultra")
         log_path = dados.get("log_path")
         logger = LogRetomado(log_path) if log_path and os.path.exists(log_path) else None
-        sessao = cls(Config(**cfg), logger=logger)
+        try:
+            sessao = cls(Config(**cfg), logger=logger)
+        except MotorIndisponivel as erro:
+            # A partida já está correndo: sem o Stockfish neste computador, segue com o motor próprio
+            cfg["motor"] = "proprio"
+            sessao = cls(Config(**cfg), logger=logger)
+            sessao.aviso = "O Stockfish não abriu: a partida retomada segue com o motor próprio da equipe."
+            sessao.logger.log_event(f"{sessao.aviso} Detalhe: {erro}")
         board = chess.Board(dados["fen_inicial"])
         for uci in dados["lances"]:
             board.push_uci(uci)
@@ -666,6 +812,8 @@ class GameSession:
         sessao.engine.contempt = dados["contempt"]
         sessao.use_ponder = dados["ponder"]
         sessao.time_manager.sync_clocks(dados["relogio_nosso"], dados["relogio_adv"])
+        sessao.operador_inicial = dados.get("operador_inicial", dados["operador"])
+        sessao.calibracao_valida = False  # o tempo com a interface fechada não é custo do operador
         sessao.inicio_turno = time.perf_counter()
         sessao.logger.log_event(
             f"Partida retomada pela interface: {len(dados['lances'])} meios-lances, "

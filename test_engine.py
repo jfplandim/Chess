@@ -11,14 +11,19 @@ Verifica:
  4. SEE (Static Exchange Evaluation) em trocas simples
  5. Táticas: mates em 1 e 2, sacrifício de Dama com mate (WAC.001), garfo de Cavalo
  6. Empates: repetição, material insuficiente, afogamento
- 7. Gestão de tempo: nunca orça mais que o relógio (15+10, 25+0, Armageddon, emergência)
+ 7. Gestão de tempo: nunca orça mais que o relógio (15+10, 25+0, Armageddon, emergência) e, numa
+    partida longa de 15+10, o relógio nunca fica abaixo da zona de sobrevivência
  8. A busca SEMPRE devolve lance legal (posições aleatórias, pouco tempo)
  9. Pondering: inicia/para rápido e nunca roda junto com a busca principal
 10. Log obrigatório da banca (FAQ Item 9)
 11. Contempt contado a partir da nossa cor (Armageddon, FAQ Item 12)
 12. Motor do torneio: Stockfish com a nossa gestão de tempo (livro, desempenho Baixo/Médio/Ultra,
-    limite rígido, táticas, lances legais, ponder e reabertura se o processo cair). Sem Stockfish
-    instalado, só avisa.
+    limite rígido, táticas, lances legais, ponder, reabertura se o processo cair, melhor lance até
+    a queda e processo travado). Sem Stockfish instalado, só avisa.
+13. Leitura do lance digitado pelo operador: todo lance legal em UCI vira exatamente aquele lance;
+    lance nulo, casa repetida e SAN ambíguo viram erro; nenhum texto derruba a interface
+14. Custo do operador recalibrado pelo relógio físico a cada sincronização (só para cima) e
+    leitura do relógio digitado no F3 (formato estrito, confirmação para valor improvável)
 """
 
 import os
@@ -174,6 +179,21 @@ def run_all_tests() -> None:
         soft, hard = tmx.allocate_time(b, 30)
         print(f"  -> {name:18s}: relógio {remaining:6.1f}s -> alvo {soft:6.2f}s | máximo {hard:6.2f}s")
         assert 0 < soft <= hard < max(0.2, remaining - 0.4), f"Orçamento inválido em {name}"
+    # Partida longa de 15+10 (150 lances), o motor gastando sempre o alvo: o relógio desce até a
+    # zona de sobrevivência (~42 s com operador de 4 s) e fica ali; gastando sempre o máximo, não estoura.
+    for gasta_maximo in (False, True):
+        tmx = TimeManager(initial_minutes=15, increment_seconds=10, move_overhead=0.5, operator_overhead=4.0)
+        menor = tmx.remaining_time
+        for n in range(1, 151):
+            b.fullmove_number = n
+            soft, hard = tmx.allocate_time(b, 30)
+            tmx.register_move_time(hard if gasta_maximo else tmx.optimum)
+            menor = min(menor, tmx.remaining_time - 10.0)  # antes do incremento entrar
+            assert tmx.remaining_time - 10.0 > 0, f"Estourou o relógio no lance {n}"
+        if not gasta_maximo:
+            assert menor >= 30.0, f"O relógio desceu a {menor:.1f}s numa partida longa"
+        print(f"  -> 150 lances de 15+10 gastando sempre o {'máximo' if gasta_maximo else 'alvo'}: "
+              f"menor relógio {menor:.1f}s")
 
     # 8. Sempre lance legal
     print("\n[TESTE 8] A busca sempre devolve lance legal (60 posições aleatórias, 0,15 s)...")
@@ -201,7 +221,11 @@ def run_all_tests() -> None:
 
     # 10. Log
     print("\n[TESTE 10] Log obrigatório da banca (FAQ Item 9)...")
-    logger = MatchLogger(team_color="BRANCAS (TESTE)")
+    import tempfile
+
+    # Numa pasta temporária: o teste não pode deixar log falso em logs/ nem trocar o
+    # logs/ultima_partida_banca.txt, que é o espelho entregue à banca.
+    logger = MatchLogger(base_dir=tempfile.mkdtemp(prefix="teste_log_"), team_color="BRANCAS (TESTE)")
     logger.log_engine_move(
         move_number=1, turn_color=chess.WHITE, uci_move=res_11.best_move.uci(), depth=res_11.depth,
         nodes=res_11.nodes, score_cp=res_11.score_cp, pv_moves=res_11.pv,
@@ -211,7 +235,10 @@ def run_all_tests() -> None:
     with open(logger.log_path, encoding="utf-8") as f:
         content = f.read()
     assert res_11.best_move.uci() in content
-    print(f"  -> [OK] Log gravado em: {logger.log_path}")
+    print("  -> [OK] Log gravado com os campos do Item 9 (numa pasta temporária, apagada em seguida)")
+    import shutil
+
+    shutil.rmtree(os.path.dirname(logger.logs_dir), ignore_errors=True)
 
     # 11. Contempt pela nossa cor (Armageddon - FAQ Item 12: empate classifica as Pretas)
     print("\n[TESTE 11] Contempt contado a partir da nossa cor (Armageddon, FAQ Item 12)...")
@@ -304,6 +331,112 @@ def run_all_tests() -> None:
             res = sf.search_best_move(b, fixed_tm(0.3), use_book=False, verbose=False)
             assert res.best_move in b.legal_moves
             print("  -> [OK] Processo derrubado de propósito: a busca seguinte reabriu o Stockfish")
+            # Caiu NO MEIO da busca: vale o melhor lance que ele já tinha mostrado (não um lance de emergência)
+            b = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 9")
+            pid = sf._garantir().protocol.transport.get_pid()
+            threading.Timer(1.0, lambda: os.kill(pid, signal.SIGKILL)).start()
+            res = sf.search_best_move(b, fixed_tm(4.0), use_book=False, verbose=False)
+            assert res.best_move in b.legal_moves and res.depth >= 8 and res.elapsed_sec < 2.0
+            print(f"  -> [OK] Caiu no meio da busca: jogou o melhor lance até ali ({res.best_move.uci()}, "
+                  f"profundidade {res.depth}, {res.elapsed_sec:.1f}s)")
+            # Travou (congelado): para no limite rígido + 1,5 s, derruba o processo e joga o melhor lance
+            from motor_stockfish import ESPERA_BESTMOVE
+
+            pid = sf._garantir().protocol.transport.get_pid()
+            threading.Timer(0.5, lambda: os.kill(pid, signal.SIGSTOP)).start()
+            tmx = fixed_tm(1.5)
+            t0 = time.perf_counter()
+            res = sf.search_best_move(b, tmx, use_book=False, verbose=False)
+            gasto = time.perf_counter() - t0
+            assert res.best_move in b.legal_moves and gasto <= tmx.hard_limit + ESPERA_BESTMOVE + 0.5
+            os.kill(pid, signal.SIGKILL)
+            res = sf.search_best_move(b, fixed_tm(0.3), use_book=False, verbose=False)
+            assert res.best_move in b.legal_moves
+            print(f"  -> [OK] Travou no meio da busca: lance em {gasto:.1f}s (limite {tmx.hard_limit:.1f}s) "
+                  "e a busca seguinte abriu outro processo")
+
+    # 13. Leitura do lance digitado pelo operador (interfaces do torneio)
+    print("\n[TESTE 13] Leitura do lance digitado: nunca um lance errado, nunca uma exceção...")
+    from session import ler_lance
+
+    b = chess.Board()
+    for texto in ("0000", "--", "Z0", "@@@@", "e2e2", "a1a1", "e2-e2"):
+        leitura = ler_lance(b, texto)
+        assert leitura.estado == "erro", f"'{texto}' deveria ser erro, foi {leitura.estado} ({leitura.lance})"
+    b = chess.Board("4k3/8/8/2p5/1P1B4/8/8/4K3 w - - 0 1")  # bxc5 (peão) e Bxc5 (bispo) são legais
+    assert ler_lance(b, "bxc5").estado == "erro", "SAN minúsculo ambíguo virou lance"
+    assert ler_lance(b, "Bxc5").lance == chess.Move.from_uci("d4c5")
+    rng = random.Random(13)
+    lidos = 0
+    for b in random_positions(40, seed=13):
+        for m in b.legal_moves:
+            for texto in (m.uci(), m.uci().upper(), f" {m.uci()[:2]}-{m.uci()[2:]} "):
+                leitura = ler_lance(b, texto)
+                assert leitura.estado == "ok" and leitura.lance == m, f"'{texto}' leu {leitura.lance} em {b.fen()}"
+                lidos += 1
+        for _ in range(50):
+            texto = "".join(rng.choice("abcdefgh12345678qrbnkxBNRQK0O-=+# ") for _ in range(rng.randint(1, 7)))
+            leitura = ler_lance(b, texto)  # não pode levantar exceção
+            assert leitura.estado != "ok" or leitura.lance in b.legal_moves, f"'{texto}' virou lance ilegal"
+    print(f"  -> [OK] {lidos // 3} lances legais lidos certo, em 3 grafias cada; lance nulo, casa repetida e SAN "
+          "ambíguo viram erro")
+
+    # 14. Custo do operador recalibrado pelo relógio físico
+    print("\n[TESTE 14] Custo do operador recalibrado a cada sincronização do relógio...")
+    import functools
+
+    import session as sessao_mod
+    from search import SearchResult
+
+    pasta = tempfile.mkdtemp(prefix="teste_sessao_")
+    salvos = (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger)
+    sessao_mod.LOGS_DIR = os.path.join(pasta, "logs")  # não mexe na partida salva de verdade (logs/)
+    sessao_mod.ARQUIVO_SALVO = os.path.join(pasta, "logs", "partida_em_andamento.json")
+    sessao_mod.ARQUIVO_SALVO_ANTERIOR = os.path.join(pasta, "logs", "partida_salva_anterior.json")
+    sessao_mod.MatchLogger = functools.partial(MatchLogger, base_dir=pasta)
+    try:
+        s = sessao_mod.GameSession(sessao_mod.Config(our_color=chess.WHITE, motor="proprio", operador=4.0, ponder=False))
+        rng = random.Random(14)
+
+        def jogar(n):
+            for _ in range(n):
+                quietos = [m for m in s.board.legal_moves if not s.board.is_capture(m)] or list(s.board.legal_moves)
+                m = rng.choice(quietos)
+                s.registrar_nosso(SearchResult(m, 0, 10, 1000, 0.0, [m.uci()], "SEARCH", 10, [m]))
+                quietos = [m for m in s.board.legal_moves if not s.board.is_capture(m)] or list(s.board.legal_moves)
+                s.registrar_adversario(rng.choice(quietos))
+
+        jogar(10)
+        aviso = s.sincronizar(s.relogios()[0] - 20.0, None)  # operador real 2 s mais lento por lance
+        assert aviso and abs(s.time_manager.operator_overhead - 6.0) < 0.05, aviso
+        jogar(6)
+        assert s.sincronizar(s.relogios()[0] + 60.0, None) is None  # árbitro parou o relógio: não baixa
+        assert abs(s.time_manager.operator_overhead - 6.0) < 0.05
+        jogar(6)
+        s.desfazer(2)
+        assert s.sincronizar(s.relogios()[0] - 30.0, None) is None  # depois de desfazer: não mede
+        print(f"  -> [OK] 4,0 s -> {s.time_manager.operator_overhead:.1f} s com o operador 2 s mais lento; "
+              "não baixa com o relógio parado e não mede depois de desfazer")
+        # Relógio digitado no F3: formato estrito e confirmação para valor improvável
+        from session import ler_relogio
+
+        assert ler_relogio("12:30") == ler_relogio("12.30") == ler_relogio("750") == 750.0
+        assert ler_relogio("19.5") == 19.5
+        for texto in ("12:99", "inf", "nan", "-5", "1e9", "abc", ""):
+            try:
+                ler_relogio(texto)
+                raise AssertionError(f"'{texto}' foi aceito como relógio")
+            except ValueError:
+                pass
+        jogar(4)
+        assert s.suspeita_relogio(1230.0, None), "1230 s (20:30) depois de poucos lances deveria pedir confirmação"
+        assert s.suspeita_relogio(s.relogios()[0] - 2.0, None) is None
+        aviso = s.sincronizar(s.relogios()[0] - 200.0, None)  # 50 s por lance: não é o operador
+        assert aviso and "não mudou" in aviso and abs(s.time_manager.operator_overhead - 6.0) < 0.05
+        print("  -> [OK] F3: 12:99, inf e -5 recusados; 1230 pede confirmação; diferença absurda não recalibra")
+    finally:
+        (sessao_mod.LOGS_DIR, sessao_mod.ARQUIVO_SALVO, sessao_mod.ARQUIVO_SALVO_ANTERIOR, sessao_mod.MatchLogger) = salvos
+        shutil.rmtree(pasta, ignore_errors=True)
 
     print("\n======================================================================")
     print(f"   TODOS OS TESTES PASSARAM ({time.time() - t_start:.0f}s). MOTOR PRONTO PARA O TORNEIO!")

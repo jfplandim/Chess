@@ -25,6 +25,7 @@ let pecas = {};                // símbolo da peça -> imagem (data URI)
 let ultimaMensagem = null;
 let somVisto = null;
 let relogioPedidoVisto = null;
+let relogioConfirmado = null;
 let selecao = null;            // casa de origem destacada no tabuleiro
 let destinos = new Set();      // casas de destino destacadas
 let textoPromocao = "";
@@ -658,6 +659,7 @@ function abrirRelogio(aviso) {
   $("#relogio-rotulo-adv").textContent = `Adversário (${E.cor_adv})`;
   $("#relogio-aviso").textContent = aviso || "Digite o que o relógio físico mostra agora. Ele é a referência.";
   $("#relogio-erro").textContent = "";
+  relogioConfirmado = null;
   abrir("#dlg-relogio");
   $("#relogio-nosso-valor").select();
 }
@@ -772,8 +774,17 @@ function ligarEventos() {
 
   $("#form-relogio").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const r = await apiDialogo("/api/relogio",
-      { nosso: $("#relogio-nosso-valor").value, adv: $("#relogio-adv-valor").value }, "#relogio-erro");
+    const valores = { nosso: $("#relogio-nosso-valor").value, adv: $("#relogio-adv-valor").value };
+    const chave = `${valores.nosso}|${valores.adv}`;
+    // Valor suspeito (ex.: 1230 no lugar de 12:30): o servidor pede confirmação; o mesmo valor de novo confirma
+    const r = await apiDialogo("/api/relogio", { ...valores, confirmar: relogioConfirmado === chave }, "#relogio-erro");
+    if (r && r.confirmar) {
+      relogioConfirmado = chave;
+      $("#relogio-erro").textContent = r.confirmar;
+      $("#relogio-erro").style.color = "var(--bandeira)";
+      return;
+    }
+    relogioConfirmado = null;
     if (r) $("#dlg-relogio").close("ok");
   });
 

@@ -25,6 +25,10 @@ class MatchLogger:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(self.logs_dir, f"partida_{timestamp}.log")
+        extra = 2
+        while os.path.exists(self.log_path):  # duas partidas no mesmo segundo: não sobrescreve o log da banca
+            self.log_path = os.path.join(self.logs_dir, f"partida_{timestamp}_{extra}.log")
+            extra += 1
         self.txt_mirror_path = os.path.join(self.logs_dir, "ultima_partida_banca.txt")
 
         self._write_header(team_color)

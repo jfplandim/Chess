@@ -24,7 +24,7 @@ import chess
 import chess.svg
 
 from evaluation import evaluate_board
-from time_manager import TimeManager
+from time_manager import TimeManager, ler_relogio
 from search import SearchEngine, SearchResult
 from logger import MatchLogger
 from motor_stockfish import MotorIndisponivel, criar_motor, descrever_motor, verificar_stockfish
@@ -168,12 +168,11 @@ def print_board_visual(
 
 
 def parse_clock_input(val_str: str) -> float:
-    """Converte entrada 'MM:SS' ou segundos/minutos para segundos."""
-    val_str = val_str.strip()
-    if ":" in val_str:
-        parts = val_str.split(":")
-        return float(parts[0]) * 60.0 + float(parts[1])
-    return float(val_str)
+    """
+    Converte 'MM:SS' (ou 'MM.SS') ou segundos para segundos. Recusa (ValueError) segundos acima de 59,
+    negativo, infinito e letras: um relógio digitado errado faria o motor planejar com tempo que não tem.
+    """
+    return ler_relogio(val_str)
 
 
 def partida_acabou(board: chess.Board) -> bool:
@@ -465,14 +464,33 @@ def run_tournament_cli() -> None:
                 ponder_ctrl.stop_ponder()
                 print("\n  >>> Calculando melhor lance...")
                 try:
-                    result = engine.search_best_move(
-                        board=board,
-                        time_manager=time_manager,
-                        max_depth=64,
-                        use_book=True,
-                        use_tb=True,
-                        verbose=True,
-                    )
+                    try:
+                        result = engine.search_best_move(
+                            board=board,
+                            time_manager=time_manager,
+                            max_depth=64,
+                            use_book=True,
+                            use_tb=True,
+                            verbose=True,
+                        )
+                    except MotorIndisponivel as exc:
+                        # O Stockfish caiu e não reabriu: a partida segue com o motor próprio (o relógio não para)
+                        print(f"\n  [STOCKFISH CAIU] {exc}\n  >>> Seguindo com o motor próprio da equipe.")
+                        logger.log_event("O Stockfish caiu e não reabriu: a partida segue com o motor próprio "
+                                         f"da equipe. Detalhe: {exc}")
+                        engine = SearchEngine()
+                        engine.our_color = our_color
+                        if tc_choice == "3":
+                            engine.contempt = ARMAGEDDON_CONTEMPT if our_color == chess.WHITE else -ARMAGEDDON_CONTEMPT
+                        ponder_ctrl = PonderController(engine)
+                        result = engine.search_best_move(
+                            board=board,
+                            time_manager=time_manager,
+                            max_depth=64,
+                            use_book=True,
+                            use_tb=True,
+                            verbose=True,
+                        )
                 except Exception as exc:
                     print(f"\n  [ERRO NA BUSCA] {exc}\n  >>> Usando LANCE DE EMERGÊNCIA (avaliação em 1 ply).")
                     logger.log_event(f"Exceção na busca: {exc}. Lance de emergência usado.")

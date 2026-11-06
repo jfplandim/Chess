@@ -31,7 +31,6 @@ from textual.widgets import Button, Digits, Footer, Input, Label, Markdown, Radi
 
 from book_and_tb import BookAndTablebaseManager
 from evaluation import MATE_SCORE, MATE_THRESHOLD
-from main import parse_clock_input
 from motor_stockfish import (
     NOME_DESEMPENHO,
     MotorIndisponivel,
@@ -48,6 +47,7 @@ from session import (
     Leitura,
     arquivar_partida_salva,
     ler_lance,
+    ler_relogio,
     ler_partida_salva,
 )
 
@@ -443,6 +443,7 @@ class DialogoRelogio(Dialogo):
         super().__init__()
         self.sessao = sessao
         self.aviso = aviso
+        self.confirmado: tuple | None = None  # valor suspeito digitado de novo = confirmado
 
     def compose(self) -> ComposeResult:
         nosso, adv = self.sessao.relogios()
@@ -472,11 +473,16 @@ class DialogoRelogio(Dialogo):
     @on(Button.Pressed, "#ok")
     def _aplicar(self, event) -> None:
         try:
-            nosso = parse_clock_input(self.query_one("#nosso", Input).value)
+            nosso = ler_relogio(self.query_one("#nosso", Input).value)
             texto_adv = self.query_one("#adv", Input).value.strip()
-            adv = parse_clock_input(texto_adv) if texto_adv else None
-        except (ValueError, IndexError):
-            self.query_one("#erro", Static).update("Não entendi o tempo. Use MM:SS, como 12:30.")
+            adv = ler_relogio(texto_adv) if texto_adv else None
+        except ValueError as erro:
+            self.query_one("#erro", Static).update(str(erro))
+            return
+        suspeita = self.sessao.suspeita_relogio(nosso, adv)
+        if suspeita and self.confirmado != (nosso, adv):
+            self.confirmado = (nosso, adv)
+            self.query_one("#erro", Static).update(f"{suspeita} Enter de novo confirma.")
             return
         self.dismiss((nosso, adv))
 
@@ -730,11 +736,12 @@ O rodapé também aceita clique. Se o terminal capturar alguma tecla F (como F1 
 ## Situações comuns
 - **Digitei errado o lance do adversário:** F2 desfaz e o motor para. Digite o lance certo.
 - **O tabuleiro físico ficou diferente:** F5 e o FEN da posição real.
+- **Relógio (F3):** sincronize a cada uns 10 lances. Isso também mede o operador: se ele estiver mais lento do que o configurado, o custo por lance sobe sozinho.
 - **Desempate da melhor de 3 (FAQ item 12):** vale o tempo restante somado nas três partidas. Em posição morta, F6 economiza relógio.
 - **Armageddon:** com o motor próprio, o contempt já vem ajustado (com Brancas evita o empate; com Pretas, procura). O Stockfish não tem contempt: avalia o empate como 0.
-- **Motor:** o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair, reabre sozinho no lance seguinte.
+- **Motor:** o topo mostra qual está jogando. O Stockfish busca e avalia; quem decide quanto ele pensa é a nossa gestão de tempo. Se ele cair ou travar, vale o melhor lance que ele já tinha e o processo reabre; se não reabrir, a partida segue com o motor próprio e a tela avisa.
 - **O notebook travou ou a janela fechou:** rode `python tui.py` de novo e escolha **Retomar partida**. Depois confira os relógios.
-- **A busca falhou:** a interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log. F2 desfaz se a equipe preferir outro lance.
+- **A busca falhou:** só se nem o motor próprio conseguir buscar. A interface joga um lance de emergência (avaliação em 1 lance), avisa e registra no log. F2 desfaz se a equipe preferir outro lance.
 - **A interface não abre:** o modo texto continua em `python main.py`.
 
 No tabuleiro, fichas claras são as Brancas e fichas escuras são as Pretas. As letras são R rei, D dama, T torre, B bispo, C cavalo e P peão (F4 troca por símbolos).
@@ -978,6 +985,9 @@ class TelaInicio(Screen):
         except Exception as exc:  # noqa: BLE001 - arquivo salvo corrompido
             self.app.notify(f"Não deu para retomar a partida salva: {exc}", severity="error")
             return
+        aviso = sessao.tomar_aviso()
+        if aviso:
+            self.app.notify(aviso, severity="error", timeout=15)
         self.app.switch_screen(TelaPartida(sessao, retomada=True))
 
 
@@ -1234,6 +1244,9 @@ class TelaPartida(Screen):
             return
         self.ultimo_nosso = lance
         self.ultimo_resultado = resultado
+        aviso = self.sessao.tomar_aviso()
+        if aviso:
+            self.app.notify(aviso, severity="error", timeout=15)
         if self.som:
             self.app.bell()
         if self.sessao.encerrada:
@@ -1391,8 +1404,11 @@ class TelaPartida(Screen):
     def _relogio_definido(self, valores) -> None:
         if valores:
             nosso, adv = valores
-            self.sessao.sincronizar(nosso, adv)
-            self.app.notify("Relógios sincronizados.", timeout=2)
+            recalibrado = self.sessao.sincronizar(nosso, adv)
+            if recalibrado:
+                self.app.notify(recalibrado, title="Relógios sincronizados", timeout=10)
+            else:
+                self.app.notify("Relógios sincronizados.", timeout=2)
         self.atualizar_tudo()
 
     def action_ajustes(self) -> None:
